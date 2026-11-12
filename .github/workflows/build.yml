@@ -53,9 +53,7 @@ jobs:
       - name: List release files
         run: Get-ChildItem release | Select-Object Name,Length
 
-      # 普通 push：产物上传到 Actions Artifacts，可在运行详情页下载
-      - name: Upload build artifacts
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+      - name: Upload Windows artifacts
         uses: actions/upload-artifact@v7
         with:
           name: BossClaw-Windows-${{ github.ref_name }}-${{ github.sha }}
@@ -65,16 +63,109 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # 打 v* / release-* 标签：创建/更新 GitHub Release，并上传安装包与 blockmap
+  linux:
+    name: Linux package
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: desktop-app
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop-app/package-lock.json
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libarchive-tools fakeroot
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Build & package (Linux)
+        run: npm run package:linux
+
+      - name: List release files
+        run: ls -lh release
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: BossClaw-Linux-${{ github.ref_name }}-${{ github.sha }}
+          path: |
+            desktop-app/release/*.AppImage
+            desktop-app/release/*.deb
+          if-no-files-found: error
+          retention-days: 14
+
+  mac-source:
+    name: macOS source archive
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Create macOS source archive
+        run: |
+          VERSION=$(node -p "require('./desktop-app/package.json').version")
+          chmod +x desktop-app/build-mac.sh
+          cd desktop-app
+          tar \
+            --exclude=node_modules \
+            --exclude=dist \
+            --exclude=release \
+            --exclude=.venv \
+            --exclude='*.pyc' \
+            --exclude='__pycache__' \
+            -czf "../BossClaw-${VERSION}-mac.tar.gz" .
+          cd ..
+          ls -lh "BossClaw-${VERSION}-mac.tar.gz"
+
+      - name: Upload macOS source archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: BossClaw-macOS-source-${{ github.ref_name }}-${{ github.sha }}
+          path: BossClaw-*-mac.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish GitHub Release
+    if: ${{ startsWith(github.ref, 'refs/tags/') }}
+    needs: [windows, linux, mac-source]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: List release assets
+        run: ls -lh release-assets
+
       - name: Upload to GitHub Release
-        if: ${{ startsWith(github.ref, 'refs/tags/') }}
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           name: BossClaw ${{ github.ref_name }}
-          files: |
-            desktop-app/release/*.exe
-            desktop-app/release/*.blockmap
+          files: release-assets/*
           fail_on_unmatched_files: false
           draft: false
           prerelease: false
