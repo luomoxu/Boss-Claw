@@ -110,9 +110,26 @@ export function installAntdPopupAlignGuard(): () => void {
   // 不用 subtree 观察整个应用 DOM（那是每次渲染都触发的无谓开销）。
   observer.observe(document.body, { childList: true });
 
+  // 关键补充：antd 的 Select 弹层 portal / 弹层 DOM 可能是预挂载的——打开时只改 style/class，
+  // 不新增任何 DOM 节点，MutationObserver 不会触发（实测 v2.6.3：打开前后 mutDirect/mutSub 都为空）。
+  // 因此再监听用户展开动作：鼠标 pointerdown + 键盘 ArrowDown/Enter/Space，直接安排复查。
+  const onPointerDown = (event: Event): void => {
+    const target = event.target;
+    if (target instanceof Element && target.closest('.ant-select')) scheduleChecks();
+  };
+  const onKeyDown = (event: KeyboardEvent): void => {
+    if (event.key !== 'ArrowDown' && event.key !== 'Enter' && event.key !== ' ') return;
+    const target = event.target;
+    if (target instanceof Element && target.closest('.ant-select')) scheduleChecks();
+  };
+  document.addEventListener('pointerdown', onPointerDown, true);
+  document.addEventListener('keydown', onKeyDown, true);
+
   return () => {
     disposed = true;
     observer.disconnect();
+    document.removeEventListener('pointerdown', onPointerDown, true);
+    document.removeEventListener('keydown', onKeyDown, true);
     for (const timer of timers) window.clearTimeout(timer);
     timers.clear();
   };
