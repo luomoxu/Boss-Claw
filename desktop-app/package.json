@@ -60,7 +60,13 @@
     "icon": "resources/icon.ico",
     "afterPack": "build/after-pack-win-icon.js",
     "publish": null,
-    "asar": false,
+    "asar": true,
+    "asarUnpack": [
+      "camoufox/**",
+      "resources/icon.ico",
+      "resources/icon.png",
+      "node_modules/sherpa-onnx-*/**"
+    ],
     "directories": {
       "output": "release",
       "buildResources": "resources"
@@ -76,7 +82,8 @@
       "package.json",
       "!**/*.pyc",
       "!**/__pycache__",
-      "!**/.venv/**"
+      "!**/.venv/**",
+      "!camoufox/tests/**"
     ],
     "extraResources": [
       {
