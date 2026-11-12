@@ -42,9 +42,32 @@ export type PopupDocLike = {
   querySelectorAll(selectors: string): ArrayLike<PopupLike>;
 };
 
-/** 弹层是否仍停在 rc-trigger 的未对齐默认位置 */
-export function isPopupUnpositioned(popup: { style: PopupStyle }): boolean {
-  return popup.style.left === UNPOSITIONED_LEFT && popup.style.top === UNPOSITIONED_TOP;
+/**
+ * 弹层是否仍停在 rc-trigger 的未对齐默认位置。
+ *
+ * 注意：CSS 里的 `left: -1000vw; top: -1000vh` 在真实 DOM 的 `style.left/top` 中会被
+ * 浏览器解析成像素值（1440×900 视口下是 `-14400px / -9000px`），不再保留 `vw` 单位。
+ * 因此不能只比较字符串，还要按「-1000vw = -10 × 视口宽」判断像素值。
+ */
+export function isPopupUnpositioned(
+  popup: { style: PopupStyle },
+  viewport?: { width: number; height: number },
+): boolean {
+  const left = popup.style.left || '';
+  const top = popup.style.top || '';
+  // 兼容 mock / 少数浏览器保留单位的形态
+  if (left === UNPOSITIONED_LEFT && top === UNPOSITIONED_TOP) return true;
+
+  const width = viewport?.width ?? (typeof window !== 'undefined' ? window.innerWidth : 0);
+  const height = viewport?.height ?? (typeof window !== 'undefined' ? window.innerHeight : 0);
+  if (!(width > 0 && height > 0)) return false;
+
+  const leftPx = Number.parseFloat(left);
+  const topPx = Number.parseFloat(top);
+  if (!Number.isFinite(leftPx) || !Number.isFinite(topPx)) return false;
+
+  // 1vw = 1% 视口宽；-1000vw = -10 × 视口宽（同理 -1000vh = -10 × 视口高）
+  return leftPx <= -10 * width + 1 && topPx <= -10 * height + 1;
 }
 
 /** 当前是否存在「可见但未对齐」的 Select 弹层（true = 首帧对齐丢失，需要补发 resize） */
