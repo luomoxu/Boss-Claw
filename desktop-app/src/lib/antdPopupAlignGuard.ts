@@ -101,21 +101,36 @@ export function installAntdPopupAlignGuard(): () => void {
   }
 
   let disposed = false;
+  let batchActive = false;
+  let batchRescued = false;
   const timers = new Set<number>();
 
-  const scheduleChecks = (): void => {
-    // 一次打开只补发一次 resize：首帧对齐是异步的，若 120ms 的补发尚未完成，
-    // 450ms/1200ms 再补发会把已对齐的偏移再叠加一次（实测会从 -14400 变成 +15417）。
-    let rescued = false;
+  const clearTimers = (): void => {
+    for (const timer of timers) window.clearTimeout(timer);
+    timers.clear();
+  };
+
+  const scheduleChecks = (force = false): void => {
+    // 同一次打开可能同时命中 pointerdown 和 MutationObserver；两次批次会各补发一次
+    // resize，rc-trigger 会把第二次偏移再叠加一次（实测 -14400 → +15417）。
+    // 因此安装级只允许一个批次；用户新开下拉（pointerdown/keydown）时 force 重置。
+    if (batchActive && !force) return;
+    if (force) clearTimers();
+    batchActive = true;
+    batchRescued = false;
     for (const delay of RECHECK_DELAYS_MS) {
       const timer = window.setTimeout(() => {
         timers.delete(timer);
-        if (disposed || rescued) return;
-        if (rescueStuckSelectPopups(document, () => {
-          window.dispatchEvent(new Event('resize'));
-        })) {
-          rescued = true;
+        if (disposed) return;
+        if (!batchRescued) {
+          if (rescueStuckSelectPopups(document, () => {
+            window.dispatchEvent(new Event('resize'));
+          })) {
+            batchRescued = true;
+          }
         }
+        // 最后一个复查点结束后释放批次，下一次打开可重新调度
+        if (delay === RECHECK_DELAYS_MS[RECHECK_DELAYS_MS.length - 1]) batchActive = false;
       }, delay);
       timers.add(timer);
     }
@@ -143,12 +158,12 @@ export function installAntdPopupAlignGuard(): () => void {
   // 因此再监听用户展开动作：鼠标 pointerdown + 键盘 ArrowDown/Enter/Space，直接安排复查。
   const onPointerDown = (event: Event): void => {
     const target = event.target;
-    if (target instanceof Element && target.closest('.ant-select')) scheduleChecks();
+    if (target instanceof Element && target.closest('.ant-select')) scheduleChecks(true);
   };
   const onKeyDown = (event: KeyboardEvent): void => {
     if (event.key !== 'ArrowDown' && event.key !== 'Enter' && event.key !== ' ') return;
     const target = event.target;
-    if (target instanceof Element && target.closest('.ant-select')) scheduleChecks();
+    if (target instanceof Element && target.closest('.ant-select')) scheduleChecks(true);
   };
   document.addEventListener('pointerdown', onPointerDown, true);
   document.addEventListener('keydown', onKeyDown, true);
@@ -158,7 +173,7 @@ export function installAntdPopupAlignGuard(): () => void {
     observer.disconnect();
     document.removeEventListener('pointerdown', onPointerDown, true);
     document.removeEventListener('keydown', onKeyDown, true);
-    for (const timer of timers) window.clearTimeout(timer);
-    timers.clear();
+    clearTimers();
+    batchActive = false;
   };
 }
