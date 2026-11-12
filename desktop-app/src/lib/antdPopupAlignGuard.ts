@@ -104,13 +104,18 @@ export function installAntdPopupAlignGuard(): () => void {
   const timers = new Set<number>();
 
   const scheduleChecks = (): void => {
+    // 一次打开只补发一次 resize：首帧对齐是异步的，若 120ms 的补发尚未完成，
+    // 450ms/1200ms 再补发会把已对齐的偏移再叠加一次（实测会从 -14400 变成 +15417）。
+    let rescued = false;
     for (const delay of RECHECK_DELAYS_MS) {
       const timer = window.setTimeout(() => {
         timers.delete(timer);
-        if (disposed) return;
-        rescueStuckSelectPopups(document, () => {
+        if (disposed || rescued) return;
+        if (rescueStuckSelectPopups(document, () => {
           window.dispatchEvent(new Event('resize'));
-        });
+        })) {
+          rescued = true;
+        }
       }, delay);
       timers.add(timer);
     }
