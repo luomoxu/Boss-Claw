@@ -34,8 +34,20 @@ export const VISIBLE_SELECT_POPUP_SELECTOR = '.ant-select-dropdown:not(.ant-sele
  */
 const RECHECK_DELAYS_MS = [120, 450, 1200] as const;
 
-type PopupStyle = { left?: string; top?: string };
-type PopupLike = { style: PopupStyle; isConnected?: boolean };
+type PopupStyle = {
+  left?: string;
+  top?: string;
+  right?: string;
+  bottom?: string;
+  inset?: string;
+};
+type PopupRect = { left: number; top: number; right: number; bottom: number; width: number; height: number };
+type PopupLike = {
+  style: PopupStyle;
+  isConnected?: boolean;
+  offsetHeight?: number;
+  getBoundingClientRect?: () => PopupRect;
+};
 
 /** 供离线回归使用的极小 Document 视图（真实 document 天然满足） */
 export type PopupDocLike = {
@@ -70,24 +82,54 @@ export function isPopupUnpositioned(
   return leftPx <= -10 * width + 1 && topPx <= -10 * height + 1;
 }
 
-/** 当前是否存在「可见但未对齐」的 Select 弹层（true = 首帧对齐丢失，需要补发 resize） */
+/** 弹层是否已完全离开视口（含未对齐默认位置与 rc-trigger 偏移叠加后的正/负远端） */
+export function isPopupOffscreen(popup: PopupLike): boolean {
+  if (isPopupUnpositioned(popup)) return true;
+  if (typeof popup.getBoundingClientRect !== 'function') return false;
+  if (typeof window === 'undefined') return false;
+  const rect = popup.getBoundingClientRect();
+  const width = window.innerWidth;
+  const height = window.innerHeight;
+  if (!(width > 0 && height > 0)) return false;
+  return rect.right <= 0 || rect.left >= width || rect.bottom <= 0 || rect.top >= height;
+}
+
+/** 当前是否存在「可见但未对齐」的 Select 弹层（true = 首帧对齐丢失，需要补救） */
 export function hasStuckSelectPopup(doc: PopupDocLike): boolean {
   const popups = doc.querySelectorAll(VISIBLE_SELECT_POPUP_SELECTOR);
   for (let i = 0; i < popups.length; i += 1) {
     const popup = popups[i];
-    // isConnected === false（已从文档移除）时跳过：rc-trigger 此时不会再对齐，补发也无意义
-    if (popup.isConnected !== false && isPopupUnpositioned(popup)) return true;
+    // isConnected === false（已从文档移除）时跳过：rc-trigger 此时不会再对齐，补救也无意义
+    if (popup.isConnected !== false && isPopupOffscreen(popup)) return true;
   }
   return false;
 }
 
 /**
- * 检测并补发一次 resize（rc-trigger 的 useWatch 监听 window resize 后会重新对齐弹层）。
- * @returns 是否真的补发（false = 当前没有未对齐弹层，调用方无需处理）
+ * 检测并补救可见但位置错误的弹层。
+ *
+ * 优先直接按当前打开的 Select 定位（比补发 resize 更可靠：rc-trigger 在弹层已预挂载时
+ * 会把旧偏移再叠加一次，实测 -14400 → +15417）。没有定位回调或找不到 trigger 时，
+ * 才退回原来的「补发一次 resize」。
+ *
+ * @returns 是否真的执行了补救（false = 当前没有未对齐弹层，调用方无需处理）
  */
-export function rescueStuckSelectPopups(doc: PopupDocLike, dispatchResize: () => void): boolean {
-  if (!hasStuckSelectPopup(doc)) return false;
-  dispatchResize();
+export function rescueStuckSelectPopups(
+  doc: PopupDocLike,
+  dispatchResize: () => void,
+  position?: (popup: PopupLike) => boolean,
+): boolean {
+  const popups = doc.querySelectorAll(VISIBLE_SELECT_POPUP_SELECTOR);
+  let rescued = false;
+  let positioned = false;
+  for (let i = 0; i < popups.length; i += 1) {
+    const popup = popups[i];
+    if (popup.isConnected === false || !isPopupOffscreen(popup)) continue;
+    rescued = true;
+    if (position && position(popup)) positioned = true;
+  }
+  if (!rescued) return false;
+  if (!positioned) dispatchResize();
   return true;
 }
 
@@ -110,6 +152,27 @@ export function installAntdPopupAlignGuard(): () => void {
     timers.clear();
   };
 
+  /** 直接把弹层放到当前打开的 Select 下方/上方；成功返回 true。 */
+  const positionNearTrigger = (popup: PopupLike): boolean => {
+    const trigger = document.querySelector('.ant-select-open');
+    if (!trigger) return false;
+    const el = popup as unknown as HTMLElement;
+    if (typeof el.getBoundingClientRect !== 'function') return false;
+    const rect = trigger.getBoundingClientRect();
+    const height = el.offsetHeight || 260;
+    const gap = 4;
+    const below = rect.bottom + gap;
+    const top = below + height <= window.innerHeight ? below : Math.max(gap, rect.top - height - gap);
+    el.style.position = 'absolute';
+    el.style.inset = 'auto';
+    el.style.left = `${Math.round(rect.left + window.scrollX)}px`;
+    el.style.top = `${Math.round(top + window.scrollY)}px`;
+    el.style.right = 'auto';
+    el.style.bottom = 'auto';
+    el.style.zIndex = '1050';
+    return true;
+  };
+
   const scheduleChecks = (force = false): void => {
     // 同一次打开可能同时命中 pointerdown 和 MutationObserver；两次批次会各补发一次
     // resize，rc-trigger 会把第二次偏移再叠加一次（实测 -14400 → +15417）。
@@ -123,9 +186,13 @@ export function installAntdPopupAlignGuard(): () => void {
         timers.delete(timer);
         if (disposed) return;
         if (!batchRescued) {
-          if (rescueStuckSelectPopups(document, () => {
-            window.dispatchEvent(new Event('resize'));
-          })) {
+          if (rescueStuckSelectPopups(
+            document,
+            () => {
+              window.dispatchEvent(new Event('resize'));
+            },
+            positionNearTrigger,
+          )) {
             batchRescued = true;
           }
         }
