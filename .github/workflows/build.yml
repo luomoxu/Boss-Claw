@@ -56,7 +56,7 @@ jobs:
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: BossClaw-Windows-${{ github.ref_name }}-${{ github.sha }}
+          name: BossClaw-Windows-${{ github.sha }}
           path: |
             desktop-app/release/*.exe
             desktop-app/release/*.blockmap
@@ -99,7 +99,7 @@ jobs:
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: BossClaw-Linux-${{ github.ref_name }}-${{ github.sha }}
+          name: BossClaw-Linux-${{ github.sha }}
           path: |
             desktop-app/release/*.AppImage
             desktop-app/release/*.deb
@@ -139,7 +139,7 @@ jobs:
       - name: Upload macOS source archive
         uses: actions/upload-artifact@v7
         with:
-          name: BossClaw-macOS-source-${{ github.ref_name }}-${{ github.sha }}
+          name: BossClaw-macOS-source-${{ github.sha }}
           path: BossClaw-*-mac.tar.gz
           if-no-files-found: error
           retention-days: 14
