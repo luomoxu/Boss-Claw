@@ -1676,7 +1676,7 @@ export default function Workbench() {
           continue;
         }
         if (!switchRes.switched && switchRes.clicked) {
-          addLog('warn', `推荐 tab「${tab.label}」${switchRes.error || '列表未检测到变化'}，按当前列表继续（去重兜底）`);
+          addLog('warn', `推荐 tab「${tab.label}」切换未被确认：${switchRes.error || '列表未检测到变化'}；按当前列表继续（去重兜底）`);
         }
         markCollectRun(runId, baseRun, {
           status: 'running',

@@ -73,10 +73,38 @@ export async function discoverRecommendTabs(opts: { tabId?: string; timeoutMs?: 
   return { tabs };
 }
 
-/** 列表首屏若干张卡的文本指纹，用于判断「点了 tab 之后列表是否换了」 */
-async function listSignature(tabId?: string): Promise<string> {
-  const { texts } = await queryTexts(CARD_SELECTOR, 3, tabId, 6000);
-  return texts.map((t) => t.slice(0, 80)).join('|');
+/** 列表首屏采样张数（用于判断「点了 tab 之后列表是否换了」） */
+const FINGERPRINT_CARDS = 10;
+
+interface ListFingerprint {
+  texts: string[];
+}
+
+async function listFingerprint(tabId?: string): Promise<ListFingerprint> {
+  const { texts } = await queryTexts(CARD_SELECTOR, FINGERPRINT_CARDS, tabId, 6000);
+  return { texts: texts.map((t) => t.slice(0, 80)) };
+}
+
+/**
+ * 判断两次首屏指纹是否「换过列表」。
+ *
+ * 不能用「完全相等才叫没换」：不同意向 tab 的首屏本来就高度重叠（同一批热门岗位会同时命中
+ * 推荐 / 技术经理 / 架构师），旧实现只比前 3 张、必须完全不同，重叠时会把**成功的切换**
+ * 误判成超时（日志：等待列表切换超时），随后按旧列表继续扫描。
+ * 现在改为「至少换掉 1/3 且不少于 2 张」才算切换，并在超时日志里带上重叠张数便于判断。
+ */
+function fingerprintDelta(
+  before: ListFingerprint,
+  after: ListFingerprint
+): { changed: boolean; overlap: number; compared: number } {
+  const compared = after.texts.length;
+  if (!compared) return { changed: false, overlap: 0, compared: 0 };
+  // 点击瞬间列表被卸载成骨架屏时，旧基数为空；此时首屏重新出现卡片即视为已刷新
+  if (!before.texts.length) return { changed: true, overlap: 0, compared };
+  const beforeSet = new Set(before.texts);
+  const overlap = after.texts.filter((t) => beforeSet.has(t)).length;
+  const changed = compared - overlap >= Math.max(2, Math.ceil(compared / 3));
+  return { changed, overlap, compared };
 }
 
 function sleep(ms: number): Promise<void> {
@@ -115,35 +143,62 @@ export async function switchRecommendTab(
   await scrollListToTop(tabId);
   // 第一个 tab 就是页面默认选中的「推荐」：不点击，直接扫当前列表
   if (!expectChange) return { ok: true, switched: true, clicked: false };
-  const before = await listSignature(tabId);
+
+  let before = await listFingerprint(tabId);
   let clicked = false;
-  try {
-    const res = await b.uiExec('click', { selector: RECOMMEND_TAB_SELECTOR, label: tab.label, index: 0 }, 8000, tabId);
-    if (!res?.ok) {
-      return { ok: false, switched: false, clicked: false, error: String(res?.result?.error || res?.error || '点击 tab 失败') };
-    }
-    clicked = true;
-  } catch (e) {
-    return { ok: false, switched: false, clicked, error: errText(e) };
-  }
+  let lastDelta = { changed: false, overlap: before.texts.length, compared: before.texts.length };
 
-  await scrollListToTop(tabId);
-
-  // 轮询到「列表首屏指纹变化 / 超时」。BOSS 切 tab 后是异步拉列表，没有可用的同步信号，
-  // 只能以列表内容的事实变化为准（首屏偶有同岗重叠，所以最多等到超时再放行）。
-  // 注意 before 已在滚动到顶部之后采样：上一阶段（详情采集）结束时列表停在底部，
-  // 若在底部采样，会被「滚回顶部」本身误判成「tab 已切换」。
-  const deadline = Date.now() + waitMs;
-  while (Date.now() < deadline) {
-    await sleep(TAB_POLL_INTERVAL_MS);
-    const now = await listSignature(tabId);
-    if (now && now !== before) {
+  // 最多点两次：首击可能被骨架屏 / 过渡遮罩吞掉（点击成功但列表没动），
+  // 再点一次的成本远低于漏掉整个 tab 的岗位。
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (attempt > 0) {
+      await sleep(1200);
       await scrollListToTop(tabId);
-      return { ok: true, switched: true, clicked };
+      // 以「重试点击前」的列表为新基线：首击后列表可能已经部分更新
+      before = await listFingerprint(tabId);
+    }
+    try {
+      const res = await b.uiExec('click', { selector: RECOMMEND_TAB_SELECTOR, label: tab.label, index: 0 }, 8000, tabId);
+      if (!res?.ok) {
+        const msg = String(res?.result?.error || res?.error || '点击 tab 失败');
+        // 首击失败 = 这个 tab 点不动，交给宿主跳过；重试失败时首击已经生效过，
+        // 按「切换未确认」放行，继续扫当前列表（跳过整 tab 的代价更大）。
+        if (attempt > 0) return { ok: true, switched: false, clicked, error: `重试点击失败：${msg}` };
+        return { ok: false, switched: false, clicked, error: msg };
+      }
+      clicked = true;
+    } catch (e) {
+      const msg = errText(e);
+      if (attempt > 0) return { ok: true, switched: false, clicked, error: `重试点击异常：${msg}` };
+      return { ok: false, switched: false, clicked, error: msg };
+    }
+
+    await scrollListToTop(tabId);
+
+    // 轮询到「列表首屏指纹变化 / 超时」。BOSS 切 tab 后是异步拉列表，没有可用的同步信号，
+    // 只能以列表内容的事实变化为准（见 fingerprintDelta：重叠 2/3 以内即认可切换）。
+    // 注意 before 已在滚动到顶部之后采样：上一阶段（详情采集）结束时列表停在底部，
+    // 若在底部采样，会被「滚回顶部」本身误判成「tab 已切换」。
+    const wait = attempt === 0 ? waitMs : 10000;
+    const deadline = Date.now() + wait;
+    while (Date.now() < deadline) {
+      await sleep(TAB_POLL_INTERVAL_MS);
+      const now = await listFingerprint(tabId);
+      lastDelta = fingerprintDelta(before, now);
+      if (lastDelta.changed) {
+        await scrollListToTop(tabId);
+        return { ok: true, switched: true, clicked };
+      }
     }
   }
-  // 超时不等于失败：列表可能本来就和新 tab 的首屏有重叠。放行继续扫，由宿主记 warn + 去重兜底。
-  return { ok: true, switched: false, clicked, error: '等待列表切换超时（15s），按当前列表继续' };
+  // 超时不等于失败：列表可能本来就和新 tab 的首屏高度重叠，或该 tab 已是当前选中。
+  // 放行继续扫，由宿主记 warn + 去重兜底；日志带上重叠张数便于判断到底是哪种情况。
+  return {
+    ok: true,
+    switched: false,
+    clicked,
+    error: `等待列表切换超时（${Math.round((waitMs + 10000) / 1000)}s，首屏 ${lastDelta.compared} 张中 ${lastDelta.overlap} 张未变化）`,
+  };
 }
 
 /**
