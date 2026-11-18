@@ -139,6 +139,26 @@ export interface AppConfig {
    * 使用前提：需先在 BOSS 直聘（网页 / App）内完善在线简历与求职意向，否则返回岗位可能不相关。
    */
   collectWithoutKeyword: boolean;
+  /**
+   * 推荐 tab 采集：无关键字采集（BOSS）时依次采「推荐 / 技术经理 / 架构师 / 技术总监…」各 tab。
+   * 单次最多采几个 tab（0 = 全部）。
+   */
+  recommendTabMax: number;
+  /** 推荐 tab 切换间隔（毫秒）：连续切换容易触发风控，默认 3000 */
+  recommendTabSwitchMs: number;
+  /**
+   * 单个 tab 的列表扫描上限（张）：虚拟列表同时只保留约 200 张卡，扫描阶段边滚边记，
+   * 达到上限或连续 3 轮无新卡即停。0 = 一直滚到没有新卡。
+   */
+  listScanMax: number;
+  /** 列表页 AI 标题筛选（默认开）：一眼不对口的岗位不进详情页；AI 失败自动降级为不筛 */
+  titleScreenEnabled: boolean;
+  /** 标题筛选批大小（10-120，默认 50）：每批一次轻量模型调用 */
+  titleScreenBatchSize: number;
+  /** 跳过「已沟通 / 继续沟通」岗位（默认开，列表页确定性判定） */
+  skipContactedJobs: boolean;
+  /** 「已扫描」索引有效期（天，默认 30；0 = 不按时间淘汰）；筛选规则（skill）变化时索引立即失效 */
+  seenJobsTtlDays: number;
   /** 单次采集兜底上限（对齐 job-claw-main discoveryLimit:0 默认不限；本机 1000 兜底防失控）。0 表示不限 */
   maxJobsPerRun: number;
   /**

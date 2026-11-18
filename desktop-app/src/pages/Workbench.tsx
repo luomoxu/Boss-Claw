@@ -27,6 +27,11 @@ import { ChevronDown } from '@/components/ChevronDown';
 import { LogConsole } from '@/components/LogConsole';
 import { rerankPending, promoteApprovedToQueue } from '@/lib/bossclaw/priority';
 import { analyzeJob, resolveQueueMinScore } from '@/lib/bossclaw/matching';
+import { skillInstructionsFor } from '@/lib/bossclaw/skills';
+import { buildQueueKeySet, describePrefilterCounts, listCardJobId, prefilterListCards, type ListCardRecord } from '@/lib/bossclaw/listPrefilter';
+import { screenTitles } from '@/lib/bossclaw/titleScreen';
+import { discoverRecommendTabs, prepareRecommendTab, type RecommendTab } from '@/lib/bossclaw/recommendTabs';
+import { flushSeenJobs, loadSeenJobs, markSeenJobs, stableHash } from '@/lib/bossclaw/seenJobs';
 import { fitLevelLabel } from '@/lib/bossclaw/fitLevel';
 import { isLocationExcluded } from '@/lib/bossclaw/locationFilter';
 import { isCompanyExcluded } from '@/lib/bossclaw/companyFilter';
@@ -310,7 +315,11 @@ export default function Workbench() {
   });
   const visualActiveRef = useRef(false);
   const visualTabRef = useRef('');
-  const collectDoneResolve = useRef<(() => void) | null>(null);
+  // collect-done 的回调：带上页内回传的 payload（scan 模式要拿 cards，详情模式不需要）
+  const collectDoneResolve = useRef<((payload?: any) => void) | null>(null);
+  // 「已扫描」索引的规则指纹 / 平台（每次采集批次开始时写入，phase=done 时按它记录已评估岗位）
+  const seenRulesHashRef = useRef('');
+  const seenPlatformRef = useRef<JobPlatform>('boss');
   // P09：collect-progress 高频回传 → rAF 节流 setVisualItem，避免逐条进度整页重渲染
   const visualItemBufRef = useRef<{ index: number; total: number; title: string; company: string; status: string; phase: string }>({ index: 0, total: 0, title: '', company: '', status: '', phase: '' });
   const visualsRafRef = useRef<number | null>(null);
@@ -1257,6 +1266,22 @@ export default function Workbench() {
       });
     }
     if (data?.phase === 'done' && data?.job) {
+      // 「已扫描」索引：走过完整 JD 评估的岗位（无论入队 / 跳过 / reject）都记一笔，
+      // 下一轮采集在列表页直接跳过，不再点开详情重复评分。规则指纹变化时索引自动失效。
+      if (seenRulesHashRef.current) {
+        const rawId = String(data.job?.jobId || '');
+        const jid = (rawId.match(/(?:encryptJobId|jobId|securityId|lid)=([^&?#]+)/i)?.[1] || rawId)
+          .replace(/\.html$/i, '')
+          .trim()
+          || String(data.job?.url || '').match(/job_detail\/([^/?#.]+)/i)?.[1] || '';
+        if (jid) {
+          markSeenJobs(
+            [{ platform: seenPlatformRef.current, jobId: jid, title: data.job?.title, company: data.job?.company, salary: data.job?.salary }],
+            seenRulesHashRef.current,
+            'jd'
+          );
+        }
+      }
       // 采集逐卡产出不等分析：投进有界并发队列，杜绝无界并发 LLM 调用。
       // ingestJob 内部已 try/catch 兜底不会 reject，此处 catch 仅防队列自身异常产生 unhandledrejection。
       const q = analysisQueueRef.current;
@@ -1291,24 +1316,26 @@ export default function Workbench() {
   }, [ingestJob, addLog]);
 
   // 采集完成回传（collect-done）：累计处理数并唤醒本轮导航循环，进入下一个搜索组合
-  const handleCollectDone = useCallback(() => {
+  const handleCollectDone = useCallback((data?: any) => {
     // 不采用 webview 回传的 processed（卡片 key 去重不稳定，会虚高如"5181"）；
     // 「已处理」以 batch 内实际入库/入眼的唯一岗位数（ingestedSeenRef.size）为准，见 runVisualCollect。
+    // data 只在 scan 模式有意义（cards = 扫描到的卡片清单）。
     const finish = collectDoneResolve.current;
-    if (finish) { collectDoneResolve.current = null; finish(); }
+    if (finish) { collectDoneResolve.current = null; finish(data); }
   }, []);
 
   // 单标签内启动可视化采集，返回由 collect-done 回传 resolve 的 Promise（带超时兜底）
-  const visualCollectInTab = useCallback((tabId: string, opts: any): Promise<void> => {
+  // resolve 值是页内 collect-done 的 payload（scan 模式取 cards；超时 / 详情模式为空）
+  const visualCollectInTab = useCallback((tabId: string, opts: any): Promise<any> => {
     return new Promise((resolve) => {
       let done = false;
       let timer: any;
-      const finish = () => {
+      const finish = (payload?: any) => {
         if (done) return;
         done = true;
         if (timer) clearTimeout(timer);
         if (collectDoneResolve.current === finish) collectDoneResolve.current = null;
-        resolve();
+        resolve(payload);
       };
       collectDoneResolve.current = finish;
       webviewApi.current?.sendInTab(tabId, 'visual-collect', opts);
@@ -1445,6 +1472,31 @@ export default function Workbench() {
       }
     }
 
+    // 「已扫描」索引的规则指纹 = JD 筛选 skill 正文 + 影响判定结果的配置。
+    // 任一变化 → 指纹变化 → 旧索引失效，岗位重新进入评估（避免改规则后被旧扫描记录挡住）。
+    try {
+      const skillText = await skillInstructionsFor('job-analysis');
+      seenRulesHashRef.current = stableHash(JSON.stringify({
+        skill: skillText,
+        minScore: config.minScore,
+        minQueueScore: config.minQueueScore,
+        minSalary: config.minSalaryPerMonth,
+        hr: config.hrActivityFilter,
+        jdKeywords: config.excludedJobDescKeywords,
+        companies: config.excludedCompanies,
+        recruiters: config.excludedRecruiters,
+        locations: config.targetLocations,
+        excludedCities: config.excludedCities,
+        excludedProvinces: config.excludedProvinces,
+        titleScreen: config.titleScreenEnabled === false ? 'off' : `on:${config.titleScreenBatchSize}`,
+        skipContacted: config.skipContactedJobs !== false,
+      }));
+    } catch {
+      // 取不到 skill 正文时宁可不写索引（'' = 不记录），也不能用假指纹把岗位永久标成「已评估」
+      seenRulesHashRef.current = '';
+    }
+    seenPlatformRef.current = platform;
+
     visualActiveRef.current = true;
     setVisualCollecting(true);
     setVisualPaused(false);
@@ -1567,7 +1619,176 @@ export default function Workbench() {
       return { ready: false, reason: 'timeout', st, probes, okProbes };
     };
 
-    addLog('info', `开始可视化采集（${platformLabel(platform)}）：共 ${queue.length} 个搜索组合，${platform === 'boss' ? '逐岗位平滑滚动 + 高亮 + 点击展开详情' : '列表级滚动 + 高亮（不点开详情，详情 JD 按平台详情接口补齐）'}${cfg0.collectWithoutKeyword ? '（无关键字模式：链接不带 query，仅保留城市 / 求职类型等筛选）' : ''}`);
+    addLog('info', `开始可视化采集（${platformLabel(platform)}）：共 ${queue.length} 个搜索组合，${
+      platform === 'boss'
+        ? (config.collectWithoutKeyword
+          ? '推荐 tab 逐个扫描 → 列表页预筛 → 只对通过的岗位点开详情'
+          : '逐岗位平滑滚动 + 高亮 + 点击展开详情')
+        : '列表级滚动 + 高亮（不点开详情，详情 JD 按平台详情接口补齐）'
+    }${cfg0.collectWithoutKeyword ? '（无关键字模式：链接不带 query，仅保留城市 / 求职类型等筛选）' : ''}`);
+
+    // ===== BOSS 无关键字采集 = 推荐 tab 采集 + 列表页两级筛选 =====
+    // 每个搜索组合（一个城市）依次走：
+    //   发现 tab → 逐 tab：切换 → 扫描（只滚不点）→ ① 确定性预筛 → ② AI 标题筛选
+    //   → ③ 只对通过的岗位点开详情（allowKeys）
+    // 失败口径：tab 发现失败 → 只采当前列表（等价改造前）；AI 标题筛选失败 → 不筛标题（不误杀）。
+    // 只采 BOSS：其余平台没有这套「推荐 tab + 内联详情」的页面结构。
+    const recommendTabMode = platform === 'boss' && Boolean(config.collectWithoutKeyword);
+    const runRecommendTabsForItem = async (
+      tabId: string,
+      baseRun: Partial<TaskRun>,
+      runId: string,
+      qi: number
+    ): Promise<number> => {
+      const cfg = useSettingsStore.getState().config;
+      const seen = loadSeenJobs();
+      const seenTtlMs = Math.max(0, Number(cfg.seenJobsTtlDays) || 0) * 86400000;
+      // 空串 = 本轮拿不到 skill 正文：不读也不写索引（宁可重扫，也不能用假指纹长期挡住岗位）
+      const rulesHash = seenRulesHashRef.current;
+      const queueKeys = buildQueueKeySet(useDataStore.getState().pending, 'boss');
+      const scanMax = Math.max(20, Number(cfg.listScanMax) || 200);
+      const tabMax = Math.max(0, Number(cfg.recommendTabMax) || 0);
+      const switchMs = Math.max(1000, Number(cfg.recommendTabSwitchMs) || 3000);
+      const titleOn = cfg.titleScreenEnabled !== false;
+      const batchSize = Math.max(10, Math.min(120, Number(cfg.titleScreenBatchSize) || 50));
+      const before = ingestedSeenRef.current.size;
+      // 本轮已进入详情阶段的扫描 key（跨 tab 去重：同一岗位可能在多个 tab 重复推荐）
+      const detailedKeys = new Set<string>();
+
+      const disc = await discoverRecommendTabs({ tabId });
+      let tabs: RecommendTab[];
+      if (disc.tabs.length) {
+        tabs = disc.tabs;
+        addLog('info', `推荐页发现 ${tabs.length} 个 tab：${tabs.map((t) => t.label).join(' / ')}`);
+      } else {
+        addLog('warn', `推荐 tab 发现失败：${disc.error || '未命中 tab 选择器'}；退化为只采当前推荐列表`);
+        tabs = [{ label: '当前推荐列表', index: 0 }];
+      }
+      if (tabMax > 0 && tabs.length > tabMax) tabs = tabs.slice(0, tabMax);
+
+      for (let ti = 0; ti < tabs.length; ti += 1) {
+        if (!visualActiveRef.current) break;
+        const tab = tabs[ti];
+        const tag = `（tab ${ti + 1}/${tabs.length}：${tab.label}）`;
+        const switchRes = await prepareRecommendTab(tab, { tabId, isFirst: ti === 0 });
+        if (!switchRes.ok) {
+          addLog('warn', `切换推荐 tab「${tab.label}」失败：${switchRes.error || '未知原因'}，跳过该 tab`);
+          continue;
+        }
+        if (!switchRes.switched && switchRes.clicked) {
+          addLog('warn', `推荐 tab「${tab.label}」${switchRes.error || '列表未检测到变化'}，按当前列表继续（去重兜底）`);
+        }
+        markCollectRun(runId, baseRun, {
+          status: 'running',
+          stage: 'queued',
+          stageLabel: `扫描列表${tag}`,
+          progress: Math.round((qi / queue.length) * 100),
+        });
+
+        // ① 扫描（只滚动、不点详情）
+        const scanPayload = await visualCollectInTab(tabId, {
+          mode: 'scan',
+          scanMax,
+          settleMs: collectSpeedMs,
+          listTimeoutMs: pageTimeoutMs,
+          autoScroll: config.listAutoScroll !== false,
+          scrollRounds: Number(config.listScrollRounds) > 0 ? Number(config.listScrollRounds) : 0,
+          platform: 'boss',
+        });
+        if (!visualActiveRef.current) break;
+        if (scanPayload?.loginRequired) {
+          visualLoginBlockedRef.current = 'BOSS 未登录或登录态已失效';
+          break;
+        }
+        const cards: ListCardRecord[] = Array.isArray(scanPayload?.cards) ? scanPayload.cards : [];
+        // 本轮去重：同一岗位可能在多个 tab 重复推荐，也可能在上一轮详情阶段已入库但分析还没跑完
+        // （此时 data.pending / 已扫描索引都还没写），用 ingestedSeenRef（入库前即写入）兜底。
+        const runSeen = ingestedSeenRef.current;
+        const fresh = cards.filter((c) => {
+          if (!c?.key || detailedKeys.has(c.key)) return false;
+          const u = jobUrlKey({ url: c.key });
+          if (u && runSeen.has(u)) return false;
+          const jid = String(c.jobId || '').toLowerCase();
+          if (jid && runSeen.has(jid)) return false;
+          return true;
+        });
+        if (!fresh.length) {
+          addLog('info', `「${tab.label}」未扫描到新岗位${cards.length ? `（${cards.length} 个本轮已处理）` : ''}`);
+          continue;
+        }
+        addLog('info', `「${tab.label}」扫描到 ${fresh.length} 个岗位${cards.length !== fresh.length ? `（另有 ${cards.length - fresh.length} 个本轮已处理）` : ''}`);
+
+        // ②-1 确定性预筛（本地，0 次请求）
+        const pf = prefilterListCards(fresh, { platform: 'boss', config: cfg, seen, rulesHash, seenTtlMs, queueKeys });
+        if (pf.skipped.length) {
+          addLog('info', `确定性预筛${tag}：保留 ${pf.pass.length}，排除 ${pf.skipped.length}（${describePrefilterCounts(pf.counts)}）`);
+        }
+        if (!pf.pass.length) continue;
+
+        // ②-2 AI 标题筛选（批量；失败则整批保留，绝不误杀）
+        let allowed = pf.pass;
+        if (titleOn) {
+          markCollectRun(runId, baseRun, {
+            status: 'running',
+            stage: 'queued',
+            stageLabel: `AI 标题筛选中${tag}`,
+            progress: Math.round((qi / queue.length) * 100),
+          });
+          const ts = await screenTitles(
+            pf.pass.map((c) => ({ key: c.key, title: c.title, company: c.company, salary: c.salary, location: c.location, raw: c.raw })),
+            {
+              model: cfg.model,
+              batchSize,
+              profile: useDataStore.getState().profile,
+              shouldStop: () => !visualActiveRef.current,
+            }
+          );
+          if (!ts.usedAI) {
+            addLog('warn', `标题筛选未生效（AI 未配置或调用失败），跳过标题筛选直接采集详情${ts.errors[0] ? `：${ts.errors[0]}` : ''}`);
+          } else {
+            const excludedCards = pf.pass.filter((c) => ts.excluded.has(c.key));
+            addLog('info', `标题筛选${tag}：保留 ${pf.pass.length - excludedCards.length}，排除 ${excludedCards.length}（AI ${ts.batches} 批${ts.failedBatches ? `，失败 ${ts.failedBatches} 批` : ''}）`);
+            excludedCards.slice(0, 8).forEach((c) => {
+              addLog('info', `标题排除「${String(c.title || '').slice(0, 40)}」：${ts.excluded.get(c.key) || '不对口'}`);
+            });
+            // 被标题筛掉的也写进「已扫描」索引（stage:'title'）：下一轮用本地规则直接跳过，不再烧 AI
+            if (rulesHash) {
+              markSeenJobs(
+                excludedCards.map((c) => ({ platform: 'boss', jobId: listCardJobId(c), title: c.title, company: c.company, salary: c.salary })),
+                rulesHash,
+                'title'
+              );
+            }
+            allowed = pf.pass.filter((c) => !ts.excluded.has(c.key));
+          }
+        }
+        if (!allowed.length) continue;
+        allowed.forEach((c) => detailedKeys.add(c.key));
+
+        // ③ 详情阶段：只对通过的岗位点开详情（未通过者只占一位滚动，不点击、不提取）
+        addLog('info', `采集详情${tag}：${allowed.length} 个岗位（其余岗位不点开）`);
+        markCollectRun(runId, baseRun, {
+          status: 'running',
+          stage: 'queued',
+          stageLabel: `采集中${tag}`,
+          progress: Math.round((qi / queue.length) * 100),
+        });
+        await visualCollectInTab(tabId, {
+          settleMs: collectSpeedMs,
+          listTimeoutMs: pageTimeoutMs,
+          autoScroll: true,
+          // 详情阶段要「从列表顶部重新走一遍」找到白名单卡片，不设下拉轮数上限（到底/连续空轮自停）
+          scrollRounds: 0,
+          maxJobs: Math.max(1, Math.min(allowed.length, Number(config.maxJobsPerRun) || allowed.length)),
+          platform: 'boss',
+          allowKeys: allowed.map((c) => c.key),
+        });
+        if (!visualActiveRef.current) break;
+        if (ti < tabs.length - 1) await visualWait(switchMs);
+      }
+      return Math.max(0, ingestedSeenRef.current.size - before);
+    };
+
     // 本批采集任务的 runId（用于结束时把未收尾的卡片统一收口）
     const batchRunIds: string[] = [];
     for (let qi = 0; qi < queue.length; qi += 1) {
@@ -1660,6 +1881,23 @@ export default function Workbench() {
         stageLabel: `采集中（${qi + 1}/${queue.length}）`,
         progress: comboProgress,
       });
+
+      // BOSS 无关键字采集：走「推荐 tab + 列表页两级筛选」链路（见上方 runRecommendTabsForItem）
+      if (recommendTabMode) {
+        const gotRec = await runRecommendTabsForItem(tabId, baseRun, runId, qi);
+        if (!visualActiveRef.current) break;
+        markCollectRun(runId, baseRun, {
+          status: 'success',
+          stage: 'success',
+          stageLabel: gotRec > 0 ? `已完成，采集 ${gotRec} 个岗位` : '已完成（无新增岗位）',
+          processed: gotRec,
+          discovered: gotRec,
+          progress: Math.round(((qi + 1) / queue.length) * 100),
+        });
+        await visualWait(800);
+        continue;
+      }
+
       // 列表首屏等待上限同步跟随「搜索页加载等待上限」，避免页面已就绪但列表仍在渲染时被提前判空
       // 接入设置约束：listAutoScroll（是否自动下拉加载更多，false=只采首屏可见卡）、
       //   listScrollRounds（每批下拉轮数上限，0=滚到物理底部/连续空轮停止）、
@@ -1686,6 +1924,8 @@ export default function Workbench() {
       await visualWait(800);
     }
     const wasStopped = !visualActiveRef.current;
+    // 「已扫描」索引立即落盘（写入本身是 800ms 防抖）：用户采集完可能立刻关窗口
+    flushSeenJobs();
     // 用户停止：本批仍在「采集中」的采集任务收口为「已跳过」，避免任务进度页停留在进行中
     if (wasStopped) settleCollectRuns(batchRunIds, '已停止（未完成）');
     const processed = ingestedSeenRef.current.size;

@@ -2506,6 +2506,102 @@ async function scrollJobListLoadMore(processed, opts = {}) {
   return { grew, atBottom: !grew }; // 有新卡 → 继续收集；无新卡 → 确认为到底
 }
 
+// ===== 列表扫描（列表页两级筛选的第一段）：只滚动、只记录卡片身份，**不点详情** =====
+// 为什么必须在页内做：BOSS 是虚拟列表，页面同时只保留约 200 张卡（滚下去时上面的会被回收）。
+// 宿主拿不到「已经滚过去的那一段」的 DOM，只能在页内边滚边记，最后一次性把卡片清单回传。
+// 请求面：本函数不点击任何卡片、不调用任何接口，只做滚动（与人工下拉同量级）。
+async function scanList(opts = {}) {
+  collectCtl.paused = false;
+  collectCtl.stopped = false;
+  collectCtl.settleMs = Math.max(400, Number(opts.settleMs) || 1200);
+  const settleMsNow = () => Math.max(400, Number(collectCtl.settleMs) || 1200);
+  const scanMax = Math.max(1, Number(opts.scanMax) || 200);
+  const autoScroll = opts.autoScroll !== false;
+  const scrollRounds = Math.max(0, Number(opts.scrollRounds) || 0);
+  const listTimeoutMs = Math.max(5000, Number(opts.listTimeoutMs) || 30000);
+
+  // records 既是「扫描结果」也是 scrollJobListLoadMore 的 processed 集合（Map 有 has()）
+  const records = new Map();
+  notify('collect-progress', { phase: 'scan-start', count: 0, scanMax, status: `开始扫描列表（上限 ${scanMax} 张）` });
+
+  const waitDeadline = Date.now() + listTimeoutMs;
+  while (Date.now() < waitDeadline && !collectCtl.stopped) {
+    let n = 0;
+    try { n = collectCards(true).length; } catch { n = 0; }
+    if (n > 0) break;
+    if (loginWallDetected()) {
+      notify('collect-progress', { phase: 'login-required', count: 0, scanMax, status: `${PLATFORM} 未登录或登录态已失效：请先在该平台标签页扫码登录后再采集` });
+      notify('collect-done', { mode: 'scan', cards: [], scanned: 0, loginRequired: true });
+      return;
+    }
+    await sleep(settleMsNow());
+  }
+
+  let scrollRoundsUsed = 0;
+  let emptyRounds = 0;
+  while (!collectCtl.stopped) {
+    await waitWhilePaused();
+    if (collectCtl.stopped) break;
+    let cards = [];
+    try { cards = collectCards(true); } catch (e) {
+      notify('collect-progress', { phase: 'collect-error', count: records.size, scanMax, status: `卡片查询异常：${String(e?.message || e).slice(0, 80)}` });
+      await sleep(settleMsNow());
+      continue;
+    }
+    let added = 0;
+    for (const card of cards) {
+      if (records.size >= scanMax) break;
+      let key = '';
+      try { key = collectCardKey(card); } catch { key = ''; }
+      if (!key || records.has(key)) continue;
+      // 字段提取全部 try/catch 兜底：单张卡结构异常不能中断整轮扫描
+      let identity = { title: '', company: '', href: '', raw: '' };
+      let fields = { salary: '', location: '', hrActive: '', isHeadhunter: false };
+      try { identity = cardIdentity(card) || identity; } catch {}
+      try { fields = cardFields(card) || fields; } catch {}
+      records.set(key, {
+        key,
+        jobId: jobUrlToken(identity.href) || '',
+        title: String(identity.title || '').slice(0, 80),
+        company: String(identity.company || '').slice(0, 60),
+        salary: String(fields.salary || '').slice(0, 30),
+        location: String(fields.location || '').slice(0, 30),
+        hrActive: String(fields.hrActive || '').slice(0, 20),
+        isHeadhunter: Boolean(fields.isHeadhunter),
+        // raw 压平后截 240 字：标题筛选与「已沟通」判定都靠它（含行业/技能/学历标签）
+        raw: String(identity.raw || '').replace(/\s+/g, ' ').slice(0, 240),
+      });
+      added += 1;
+    }
+    notify('collect-progress', { phase: 'scan-progress', count: records.size, added, scanMax, status: `已扫描 ${records.size} 张卡片` });
+    if (records.size >= scanMax) {
+      notify('collect-progress', { phase: 'scan-bottom', count: records.size, scanMax, status: `已达扫描上限（${scanMax} 张）` });
+      break;
+    }
+    if (!autoScroll) break;
+    if (scrollRounds > 0 && scrollRoundsUsed >= scrollRounds) {
+      notify('collect-progress', { phase: 'scan-bottom', count: records.size, scanMax, status: `已达下拉轮数上限（${scrollRounds} 轮）` });
+      break;
+    }
+    scrollRoundsUsed += 1;
+    const { grew, atBottom } = await scrollJobListLoadMore(records, { settleMs: settleMsNow() });
+    if (atBottom) {
+      notify('collect-progress', { phase: 'scan-bottom', count: records.size, scanMax, status: '已滚动到列表底部，加载完毕' });
+      break;
+    }
+    if (!grew) emptyRounds += 1;
+    else emptyRounds = 0;
+    if (emptyRounds >= 3) {
+      notify('collect-progress', { phase: 'scan-bottom', count: records.size, scanMax, status: '连续 3 轮无新卡，停止加载' });
+      break;
+    }
+  }
+
+  const list = [...records.values()];
+  notify('collect-progress', { phase: 'scan-done', count: list.length, scanMax, status: `扫描完成，共 ${list.length} 张卡片` });
+  notify('collect-done', { mode: 'scan', listUrl: location.href, cards: list, scanned: list.length, stopped: collectCtl.stopped });
+}
+
 // 可视化采集主循环：逐卡片 滚动 → 高亮 → 点击展开 → 提取，实时回传进度。
 // 关键（对齐 job-claw-main）：BOSS 使用虚拟列表，点击后卡片节点会被替换，
 // 每轮重新 collectCards()，用 cardKey 去重（processed Set），index 递增，避免持有失效 DOM。
@@ -2539,6 +2635,35 @@ async function visualCollect(opts = {}) {
   let index = 0;
   let processedCount = 0;
   let emptyRounds = 0;
+
+  // 详情阶段白名单（列表页两级筛选的第三段）：只有通过「确定性预筛 + AI 标题筛选」的卡片
+  // 才点开详情。null = 不过滤（等价改造前行为）。
+  // 匹配口径：卡片去重 key（归一化 href）或 jobId token 任一命中即可 —— 扫描阶段与详情阶段
+  // 都走 collectCardKey()，正常情况下 key 完全一致；token 兜底用于 href 尾参变化的情况。
+  const allowKeys = Array.isArray(opts.allowKeys) ? opts.allowKeys.filter((k) => typeof k === 'string' && k) : null;
+  const allowSet = allowKeys && allowKeys.length ? new Set(allowKeys) : null;
+  const allowTokens = allowSet
+    ? new Set(allowKeys.map((k) => jobUrlToken(k)).filter(Boolean))
+    : null;
+  const allowedTotal = allowSet ? allowSet.size : 0;
+  let allowSkipped = 0;
+  let allowedDone = 0;
+  const cardAllowed = (key) => {
+    if (!allowSet) return true;
+    if (allowSet.has(key)) return true;
+    const token = jobUrlToken(key);
+    return Boolean(token) && allowTokens.has(token);
+  };
+  if (allowSet) {
+    notify('collect-progress', { phase: 'allow-filter', index: 0, total: 0, processed: 0, maxJobs, allowedTotal, status: `仅采集通过筛选的 ${allowedTotal} 个岗位` });
+    // 扫描阶段把列表滚到了底部；白名单卡片可能分布在列表任意位置，必须从顶部重新走一遍。
+    try {
+      const sc = findListScroller();
+      if (sc) sc.scrollTop = 0;
+      else window.scrollTo(0, 0);
+    } catch {}
+    await sleep(settleMsNow());
+  }
   notify('collect-progress', { phase: 'start', index: 0, total: 0, maxJobs, status: '准备中' });
 
   // 一次性 DOM 诊断：把每个选择器命中数和前若干节点 className 发给 React（只发一次）
@@ -2618,6 +2743,8 @@ async function visualCollect(opts = {}) {
     await waitWhilePaused();
     if (collectCtl.stopped) break;
     if (processedCount >= maxJobs) break;
+    // 白名单里的岗位已全部采完 → 不必再滚到底（虚拟列表越往后越不对口，少滚=少请求）
+    if (allowSet && allowedDone >= allowedTotal) break;
     let cards = [];
     try { cards = collectCards(); } catch (e) {
       notify('collect-progress', { phase: 'collect-error', index, total: 0, processed: processedCount, maxJobs, status: `卡片查询异常：${String(e?.message || e).slice(0, 80)}` });
@@ -2677,6 +2804,16 @@ async function visualCollect(opts = {}) {
     const key = collectCardKey(card);
     if (!key || processed.has(key)) continue;
     processed.add(key);
+    // 不在白名单 → 只记 processed、不滚动/高亮/点击/提取。
+    // 必须记进 processed：scrollJobListLoadMore 用 hasUncollectedCards(processed) 判断「还有没有
+    // 新卡」，否则被跳过的卡会让滚动误判无增长、把列表中间截断。
+    if (!cardAllowed(key)) {
+      allowSkipped += 1;
+      if (allowSkipped === 1 || allowSkipped % 20 === 0) {
+        notify('collect-progress', { phase: 'allow-skip', index, total: cards.length, processed: processedCount, maxJobs, allowSkipped, status: `跳过未通过筛选的岗位 ${allowSkipped} 个` });
+      }
+      continue;
+    }
     const identity = cardIdentity(card);
     // 诊断：每张卡片的去重 key 与身份立即回传（让 React 能确认 select 命中且 key 提取成功）
     notify('collect-progress', { phase: 'card-found', index, total: cards.length, processed: processedCount, maxJobs, title: identity.title, company: identity.company, status: `命中卡片 key=${String(key).slice(0, 60)}` });
@@ -2731,10 +2868,18 @@ async function visualCollect(opts = {}) {
       }
     } catch (e) {}
     processedCount += 1;
+    allowedDone += 1;
     notify('collect-progress', { phase: 'done', index, total: cards.length, processed: processedCount, maxJobs, title: job.title, company: job.company, status: '完成', job });
     await sleep(settleMsNow());
   }
-  notify('collect-done', { listUrl: location.href, processed: processedCount, total: processedCount, maxJobs });
+  notify('collect-done', {
+    listUrl: location.href,
+    processed: processedCount,
+    total: processedCount,
+    maxJobs,
+    allowedTotal,
+    allowSkipped,
+  });
 }
 
 // ===== DOM 诊断（右键菜单「BossClaw 诊断：Dump DOM」触发）=====
@@ -3304,7 +3449,9 @@ if (PLATFORM === 'boss') {
 //   其余平台：列表级采集（滚动 + 高亮，不点击卡片 —— 无内联详情，见 visualCollectListOnly 头注释）
 ipcRenderer.on('visual-collect', (_e, arg) => {
   const opts = (arg && typeof arg === 'object') ? arg : {};
-  visualCollect(opts).catch((e) => notify('collect-done', { listUrl: location.href, processed: 0, total: 0, error: String(e?.message || e) }));
+  // mode:'scan' = 列表扫描（只滚不点，供列表页预筛用）；缺省 = 原逐卡详情采集
+  const run = opts.mode === 'scan' ? scanList(opts) : visualCollect(opts);
+  run.catch((e) => notify('collect-done', { mode: opts.mode || 'detail', listUrl: location.href, processed: 0, total: 0, error: String(e?.message || e) }));
 });
 // collect-control：运行时控制（暂停 / 继续 / 停止 / 调速）—— **全平台注册**
 ipcRenderer.on('collect-control', (_e, arg) => {

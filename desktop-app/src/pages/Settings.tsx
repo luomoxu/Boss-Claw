@@ -19,6 +19,7 @@ import {
   InputNumber,
   Modal,
   notification,
+  Popconfirm,
   Segmented,
   Select,
   Slider,
@@ -99,6 +100,7 @@ import { INTERVIEW_MODE_FILTER_OPTIONS } from '@/lib/bossclaw/interviewMode';
 import { CHINA_PROVINCES } from '@/lib/bossclaw/locationFilter';
 import { writeTargetLocations } from '@/lib/bossclaw/targetLocationSync';
 import { cleanSalary } from '@/lib/bossclaw/jobDisplay';
+import { clearSeenJobs, seenJobsStats } from '@/lib/bossclaw/seenJobs';
 import { camoufoxStatus, camoufoxLogin, camoufoxLogout, camoufoxStop, CAMOUFOX_MAX_PAGES, CAMOUFOX_PAGE_SIZE, type CamoufoxStatus } from '@/lib/bossclaw/camoufox';
 import {
   PLATFORM_META, PLATFORM_IDS, platformEnabled, platformPriority,
@@ -203,6 +205,8 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
   const [aiCacheStats, setAiCacheStats] = useState<ReturnType<typeof getAICacheStats> | null>(null);
+  // 「已扫描」索引统计（列表页预筛用它跳过已评估岗位；清空后立即刷新显示）
+  const [seenStats, setSeenStats] = useState(() => seenJobsStats());
   const [llmUsage, setLlmUsage] = useState<ReturnType<typeof getLLMUsageStats> | null>(null);
   // AI 技能（skills 层）启用状态：初始用内置定义，加载 SKILL.md 后刷新
   const [skills, setSkills] = useState(() => allSkillsWithState());
@@ -1700,9 +1704,108 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
                   style={{ width: '100%' }}
                 />
               </div>
+              {/* ===== BOSS 推荐 tab 采集 + 列表页两级筛选（仅无关键字采集生效）===== */}
+              <div className="sg-item">
+                <span className="field-label">推荐 tab 采集：单次 tab 上限（0 = 全部）</span>
+                <InputNumber
+                  min={0}
+                  max={20}
+                  value={config.recommendTabMax ?? 0}
+                  onChange={(v) => setConfig({ recommendTabMax: Math.max(0, v ?? 0) })}
+                  style={{ width: '100%' }}
+                />
+              </div>
+              <div className="sg-item">
+                <span className="field-label">推荐 tab 切换间隔（秒）</span>
+                <InputNumber
+                  min={1}
+                  max={10}
+                  value={Math.round((config.recommendTabSwitchMs || 3000) / 1000)}
+                  onChange={(v) => setConfig({ recommendTabSwitchMs: Math.max(1000, (v ?? 3) * 1000) })}
+                  style={{ width: '100%' }}
+                />
+              </div>
+              <div className="sg-item">
+                <span className="field-label">单 tab 列表扫描上限（张）</span>
+                <InputNumber
+                  min={20}
+                  max={1000}
+                  step={20}
+                  value={config.listScanMax || 200}
+                  onChange={(v) => setConfig({ listScanMax: Math.max(20, v ?? 200) })}
+                  style={{ width: '100%' }}
+                />
+              </div>
+              <div className="sg-item">
+                <span className="field-label">列表页 AI 标题筛选</span>
+                <div>
+                  <Switch
+                    checked={config.titleScreenEnabled !== false}
+                    onChange={(v) => setConfig({ titleScreenEnabled: v })}
+                  />
+                </div>
+              </div>
+              <div className="sg-item">
+                <span className="field-label">标题筛选批大小（条 / 次调用）</span>
+                <InputNumber
+                  min={10}
+                  max={120}
+                  step={10}
+                  value={config.titleScreenBatchSize || 50}
+                  onChange={(v) => setConfig({ titleScreenBatchSize: Math.max(10, Math.min(120, v ?? 50)) })}
+                  style={{ width: '100%' }}
+                />
+              </div>
+              <div className="sg-item">
+                <span className="field-label">跳过「已沟通 / 继续沟通」岗位</span>
+                <div>
+                  <Switch
+                    checked={config.skipContactedJobs !== false}
+                    onChange={(v) => setConfig({ skipContactedJobs: v })}
+                  />
+                </div>
+              </div>
+              <div className="sg-item">
+                <span className="field-label">「已扫描」记录有效期（天，0 = 不过期）</span>
+                <InputNumber
+                  min={0}
+                  max={365}
+                  value={config.seenJobsTtlDays ?? 30}
+                  onChange={(v) => setConfig({ seenJobsTtlDays: Math.max(0, v ?? 30) })}
+                  style={{ width: '100%' }}
+                />
+              </div>
+              <div className="sg-item">
+                <span className="field-label">
+                  已扫描记录：{seenStats.total} 条（标题筛 {seenStats.byStage.title} / JD 分析 {seenStats.byStage.jd}）
+                </span>
+                <div>
+                  <Popconfirm
+                    title="清空已扫描记录？"
+                    description="清空后下一轮采集会重新打开这些岗位（筛选规则变更时本来也会自动失效）。"
+                    okText="清空"
+                    cancelText="取消"
+                    onConfirm={() => {
+                      const n = clearSeenJobs();
+                      setSeenStats(seenJobsStats());
+                      message.success(`已清空 ${n} 条已扫描记录`);
+                    }}
+                  >
+                    <Button size="small" danger icon={<DeleteOutlined />}>
+                      清空记录
+                    </Button>
+                  </Popconfirm>
+                </div>
+              </div>
             </div>
             <Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0, fontSize: 13 }}>
               开启后，每次「搜索采集」会自动将岗位列表向下滑动以加载更多。已入库岗位将自动根据 URL 去重跳过。
+            </Paragraph>
+            <Paragraph type="secondary" style={{ marginTop: 6, marginBottom: 0, fontSize: 13 }}>
+              <b>BOSS 无关键字采集</b>会依次采集推荐页的各个意向 tab（推荐 / 技术经理 / 架构师 / 技术总监…），每个 tab
+              先只<b>滚动扫描列表</b>（不点开详情），再依次做「本地确定性预筛 → AI 标题筛选 → 只对通过的岗位点开详情」。
+              已扫描记录与标题筛掉的结果都会记入本地索引，下一轮直接跳过；<b>清洗筛选规则（JD 筛选 skill）后索引会自动失效</b>，
+              岗位会重新评估。切 tab 间隔与扫描上限越大，越稳但越慢。
             </Paragraph>
             <Paragraph type="secondary" style={{ marginTop: 6, marginBottom: 0, fontSize: 13 }}>
               两条采集通道的「加载更多」模型不同：<b>BOSS 直聘是无限加载</b>，滚动会持续追加岗位，轮数调大即可拿到远超首屏的量；

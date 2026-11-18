@@ -87,6 +87,18 @@ export const DEFAULT_CONFIG: AppConfig = {
   // 无关键字采集（随机岗位推荐）：默认关闭。开启后采集 URL 只去掉 query（关键词），
   // 保留城市 / 求职类型 / 经验 / 学历 / 薪资 / 公司规模等用户设置，由平台按账号内的求职意向返回推荐岗位。
   collectWithoutKeyword: false,
+  // 推荐 tab 采集（无关键字采集时生效）：0 = 采全部 tab；切 tab 间隔 3s（防连续切换触发风控）
+  recommendTabMax: 0,
+  recommendTabSwitchMs: 3000,
+  // 单 tab 列表扫描上限：BOSS 虚拟列表同时保留约 200 张卡，200 张 ≈ 覆盖一个意向的全部推荐尾部
+  listScanMax: 200,
+  // 列表页 AI 标题筛选：默认开（失败自动降级为「不筛标题」，不会少采）
+  titleScreenEnabled: true,
+  titleScreenBatchSize: 50,
+  // 已沟通岗位默认跳过（列表卡片直接标「继续沟通 / 已沟通」）
+  skipContactedJobs: true,
+  // 「已扫描」索引有效期 30 天；skill 正文变化时 rulesHash 变化会立即失效
+  seenJobsTtlDays: 30,
   // 单次采集兜底上限（对齐 job-claw-main discoveryLimit:0 默认不限；本机 1000 兜底防失控）
   maxJobsPerRun: 1000,
   // 防封号默认值（对齐 SAFETY_LIMITS，用户可调低；maxDailySent 顶层字段见上方说明，实际按平台适配）
