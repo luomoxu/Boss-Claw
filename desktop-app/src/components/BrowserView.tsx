@@ -121,7 +121,10 @@ export interface WebviewApi {
   /** 所有 detail 标签 id */
   getDetailTabIds: () => string[];
   getActiveTabId: () => string;
+  /** 第一个可用于自动化操作的标签：优先「有 webview 元素、非空白新标签页」的 main 标签 */
   getFirstTabId: () => string;
+  /** 标签页摘要（采集日志 / 诊断用）。cloak 引擎未实现，调用方需可选链 */
+  tabBrief?: (id: string) => { title: string; url: string; kind: 'main' | 'detail' } | null;
   /**
    * 查找**已打开**且属于指定平台的标签（按 URL hostname 判定，与 platforms.ts::resolvePlatform 同口径）。
    * 多平台采集靠它复用已有标签，避免每次为同一平台新开标签；未命中返回 ''。
@@ -886,6 +889,11 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
     return Boolean(tabId && preloadReady.current[tabId]);
   }, []);
 
+  const tabBrief = useCallback((id: string) => {
+    const t = tabsRef.current.find((x) => x.id === id);
+    return t ? { title: String(t.title || ''), url: String(t.url || ''), kind: t.kind } : null;
+  }, []);
+
   const isLoading = useCallback((id: string) => {
     const tabId = id || tabsRef.current.find((t) => t.kind === 'main')?.id || tabsRef.current[0]?.id;
     return Boolean(tabId && loadingTabsRef.current.has(tabId));
@@ -933,7 +941,15 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
       }, timeoutMs);
       apiTimers.current.set(seq, timer);
       apiResolvers.current.set(seq, (payload: any) => { clearTimeout(timer); apiTimers.current.delete(seq); resolve(payload); });
-      sendInTab(id, channel, { seq, ...args });
+      // send 失败 = 标签页没有挂载 webview（空白新标签页 / 元素未就绪 / 窗口已关闭）。
+      // 旧实现忽略返回值，白等满超时后只报「页面探测无响应」，和「页面慢」混为一谈。
+      const sent = sendInTab(id, channel, { seq, ...args });
+      if (!sent) {
+        clearTimeout(timer);
+        apiTimers.current.delete(seq);
+        apiResolvers.current.delete(seq);
+        resolve({ error: `标签页未挂载，无法发送 ${channel}（可能选到了空白标签页或 webview 尚未就绪）` });
+      }
     });
   }, [sendInTab]);
 
@@ -1035,7 +1051,14 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
       platformApply,
       pageStatus,
       getActiveTabId: () => activeIdRef.current || '',
-      getFirstTabId: () => tabsRef.current[0]?.id || '',
+      getFirstTabId: () => {
+        const list = tabsRef.current;
+        const usable = (t: TabState) => t.url !== NEW_TAB_PAGE_URL && Boolean(webviewEls.current[t.id]);
+        const main = list.find((t) => t.kind === 'main' && usable(t));
+        const any = list.find(usable);
+        return (main || any || list[0])?.id || '';
+      },
+      tabBrief,
       // 多平台采集入口复用标签：优先 main 标签（detail 标签会被空闲回收），其次任意同平台标签
       findTabByPlatform: (platform: JobPlatform) => {
         const list = tabsRef.current;
@@ -1043,7 +1066,7 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
         return (main || list.find((t) => resolvePlatform(t.url) === platform))?.id || '';
       },
     };
-  }, [apiRef, send, loadURL, closeTabById, openInNewTab, openEngineTab, loadURLInTab, sendInTab, hasTab, isPreloadReady, isLoading, getMainTabId, getDetailTabIds, bossApi, platformApply, pageStatus]);
+  }, [apiRef, send, loadURL, closeTabById, openInNewTab, openEngineTab, loadURLInTab, sendInTab, hasTab, isPreloadReady, isLoading, getMainTabId, getDetailTabIds, bossApi, platformApply, pageStatus, tabBrief]);
   const prefillGreeting = useCallback((greeting: string) => cmdOnce('prefill-greeting', { greeting }, 20000), [cmdOnce]);
   const runDomDump = useCallback((tabId?: string) => {
     sendInTab(tabId || '', 'webview-command', { action: 'dom-dump' });

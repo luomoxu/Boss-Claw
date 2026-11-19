@@ -1324,6 +1324,20 @@ export default function Workbench() {
     if (finish) { collectDoneResolve.current = null; finish(data); }
   }, []);
 
+  // webview 诊断回传（此前 BrowserView 有这个回调口子但宿主没接，诊断全被丢弃）：
+  //   preload-error → preload 脚本没跑起来，该标签页的 page-status / visual-collect 全部失效，
+  //                   表现就是「页面正常但探测无响应」，必须明确记一条 error；
+  //   dom-dump      → 右键菜单「DOM 诊断」的结果，只记摘要，完整结构太长不适合进日志。
+  const handleDomDump = useCallback((data: any) => {
+    if (!data) return;
+    if (data.type === 'preload-error') {
+      addLog('error', `页面 preload 加载失败（Chromium 错误码 ${Number(data.errorCode ?? -1)}）：${String(data.error || '未知错误').slice(0, 200)} —— 该标签页的页面探测与采集都会失效，请重载该标签或重启应用`);
+      return;
+    }
+    const stats = data.stats || {};
+    addLog('info', `DOM 诊断：${String(data.title || '').slice(0, 40)} · ${String(data.url || '').slice(0, 120)}；li=${stats.li ?? '-'}，a=${stats.a ?? '-'}，岗位链接=${stats.aJobLike ?? '-'}，正文=${stats.textLen ?? '-'} 字`);
+  }, [addLog]);
+
   // 单标签内启动可视化采集，返回由 collect-done 回传 resolve 的 Promise（带超时兜底）
   // resolve 值是页内 collect-done 的 payload（scan 模式取 cards；超时 / 详情模式为空）
   const visualCollectInTab = useCallback((tabId: string, opts: any): Promise<any> => {
@@ -1525,6 +1539,22 @@ export default function Workbench() {
       return 'skip';
     }
 
+    // 把「到底选了哪个标签」记进日志：页面探测无响应时，第一怀疑对象就是标签选错
+    // （空白新标签页没有 webview，消息发不进去），没有这条日志只能靠猜。
+    const chosenTab = webviewApi.current?.tabBrief?.(collectTabId);
+    if (chosenTab) {
+      let host = '';
+      try {
+        host = chosenTab.url ? new URL(chosenTab.url).host : '';
+      } catch {
+        /* __newtab__ 等非 URL 占位 */
+      }
+      addLog('info', `采集标签：${chosenTab.title || '（无标题）'}${host ? ` · ${host}` : ''}`);
+      if (!host || chosenTab.url === '__newtab__') {
+        addLog('warn', `采集标签不是已加载的网页（${chosenTab.url || '空地址'}），页面探测可能无响应；若持续失败请在该标签打开 BOSS 页面后重试`);
+      }
+    }
+
     const collectSpeedMs = Math.max(400, Number(config.collectSpeedMs) || 1200);
     // 搜索页加载等待上限：可配置（设置 → 搜索采集范围控制），默认 30s。
     const pageTimeoutMs = Math.max(5000, Number(config.collectPageTimeoutMs) || 30000);
@@ -1534,11 +1564,21 @@ export default function Workbench() {
     // 现改为：向页内发 page-status 探测，读 document.readyState / 岗位卡片命中数 / 正文长度；
     //   ① 探测能回（说明 preload 已就绪，IPC 不丢）且页面已可用 → 就绪；
     //   ② 遮罩状态只作参考，宽限 2s 后即使遮罩未收敛也按页面事实放行（并记一条诊断日志）。
+    // 最近一次探测失败的原因（page-status 返回 {error} / 抛异常 / 标签页未挂载）。
+    // 「页面探测无响应」本身不说明任何事：可能是标签页选错（空白新标签页没有 webview，
+    // 消息根本发不出去），也可能是 preload 注入失败；把原因带进日志才能定位。
+    let lastProbeError = '';
     const probePage = async (tabId: string): Promise<any | null> => {
       try {
         const st = await webviewApi.current?.pageStatus?.(tabId);
-        return st && !st.error ? st : null;
-      } catch {
+        if (st && !st.error) {
+          lastProbeError = '';
+          return st;
+        }
+        lastProbeError = String(st?.error || '无响应（page-status 未回包）');
+        return null;
+      } catch (e) {
+        lastProbeError = String((e as Error)?.message || e);
         return null;
       }
     };
@@ -1551,7 +1591,7 @@ export default function Workbench() {
       ));
     const describePage = (st: any): string => st
       ? `readyState=${st.readyState}，卡片 ${st.cards}，正文 ${st.bodyLen} 字`
-      : '页面探测无响应';
+      : `页面探测无响应${lastProbeError ? `（${lastProbeError.slice(0, 120)}）` : ''}`;
 
     // ===== 页面就绪等待：返回「是否就绪」+「未就绪的原因」=====
     // 未登录（命中登录墙）与加载超时是两种完全不同的故障：前者应立即收口本平台并提示用户去登录，
@@ -1564,6 +1604,8 @@ export default function Workbench() {
       st: any | null;
       probes: number;
       okProbes: number;
+      /** 末次探测失败原因（okProbes === 0 时最有价值：标签页未挂载 / preload 未注入） */
+      lastError: string;
     };
     // 登录墙判定：命中登录特征 **且** 一张岗位卡都没有。
     // 双条件是必须的守卫——正常搜索页的顶部登录按钮 / 弹窗残留也会让 loginWall 为 true，
@@ -1572,11 +1614,12 @@ export default function Workbench() {
       Boolean(st && st.loginWall && !(Number(st.cards) > 0));
     const describeProbe = (r: PageReadyResult): string => {
       const base = `页面探测 ${r.okProbes}/${r.probes} 次有响应`;
-      if (!r.st) return `${base}，末次仍无响应（preload 未注入或页面未加载）`;
+      if (!r.st) return `${base}，末次仍无响应（${r.lastError ? r.lastError.slice(0, 120) : 'preload 未注入或页面未加载'}）`;
       return `${base}，末次 ${describePage(r.st)}${r.st.url ? `，URL=${String(r.st.url).slice(0, 120)}` : ''}${loginWallHit(r.st) ? '，命中登录特征' : ''}`;
     };
 
     const waitTabReady = async (tabId: string, timeoutMs: number, keyword: string): Promise<PageReadyResult> => {
+      lastProbeError = '';
       const startedAt = Date.now();
       const deadline = startedAt + timeoutMs;
       let lastNotice = 0;
@@ -1584,7 +1627,7 @@ export default function Workbench() {
       let probes = 0;
       let okProbes = 0;
       while (Date.now() < deadline) {
-        if (!visualActiveRef.current) return { ready: false, reason: 'stopped', st, probes, okProbes };
+        if (!visualActiveRef.current) return { ready: false, reason: 'stopped', st, probes, okProbes, lastError: lastProbeError };
         const preloadFlag = Boolean(webviewApi.current?.isPreloadReady?.(tabId));
         const overlay = Boolean(webviewApi.current?.isLoading?.(tabId));
         probes += 1;
@@ -1594,19 +1637,19 @@ export default function Workbench() {
         // 登录墙即时收口：页面自身已明确是登录页 → 不再等满两轮超时（省掉 60s 白等，并给出真实原因）
         if (probed && loginWallHit(probed)) {
           addLog('warn', `「${keyword}」页面命中登录墙（${describePage(probed)}）→ 判定为未登录，本平台立即收口`);
-          return { ready: false, reason: 'login', st: probed, probes, okProbes };
+          return { ready: false, reason: 'login', st: probed, probes, okProbes, lastError: lastProbeError };
         }
         // 探测有响应 ⇒ preload 已就绪（比宿主的标记更可靠）
         const preloadOk = preloadFlag || Boolean(st);
         if (preloadOk && pageUsable(st)) {
           if (!overlay) {
             addLog('info', `「${keyword}」页面就绪（${describePage(st)}，耗时 ${Math.round((Date.now() - startedAt) / 1000)}s）`);
-            return { ready: true, reason: 'ok', st, probes, okProbes };
+            return { ready: true, reason: 'ok', st, probes, okProbes, lastError: lastProbeError };
           }
           // 页面已可用但遮罩状态未收敛：宽限 2s 后以页面事实为准放行
           if (Date.now() - startedAt > 2000) {
             addLog('info', `「${keyword}」页面就绪（${describePage(st)}）——加载遮罩状态未收敛，已按页面状态放行，不影响采集`);
-            return { ready: true, reason: 'ok', st, probes, okProbes };
+            return { ready: true, reason: 'ok', st, probes, okProbes, lastError: lastProbeError };
           }
         }
         if (Date.now() - lastNotice > 5000) {
@@ -1616,7 +1659,7 @@ export default function Workbench() {
         }
         await sleep(300);
       }
-      return { ready: false, reason: 'timeout', st, probes, okProbes };
+      return { ready: false, reason: 'timeout', st, probes, okProbes, lastError: lastProbeError };
     };
 
     addLog('info', `开始可视化采集（${platformLabel(platform)}）：共 ${queue.length} 个搜索组合，${
@@ -3548,6 +3591,7 @@ export default function Workbench() {
           onLoginState={handleLoginState}
           onCollectProgress={handleCollectProgress}
           onCollectDone={handleCollectDone}
+          onDomDump={handleDomDump}
           apiRef={webviewApi}
           overlaySuppressed={visualCollecting}
         />
