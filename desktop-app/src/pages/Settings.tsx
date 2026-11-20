@@ -2,7 +2,7 @@
  * 【主模块：设置】导航 key = 'settings'（isVisible 由 App.tsx 传入，控制可见性）
  * 子模块（settings-tabs 六个 Tab，label 见 tabItems）：
  * - 常规与外观（appearance：执行模式/主题/开机自启/内置浏览器标签页管理）
- * - 招聘平台（platforms：平台开关/每日目标/登录态等）
+ * - 招聘平台（platforms：平台开关/每日目标/登录态/平台级采集设置覆盖等）
  * - 求职偏好（criteria：基础筛选条件与偏好）
  * - AI / LLM 配置（llm：模型/API Key/AI 技能 Skills 层——技能开关、导入 SKILL.md、新建技能）
  * - 隐身引擎与桥接（engine：Camoufox/CloakBrowser 隐身引擎与本地桥接）
@@ -15,6 +15,7 @@ import {
   AutoComplete,
   Button,
   Checkbox,
+  Collapse,
   Input,
   InputNumber,
   Modal,
@@ -108,7 +109,12 @@ import {
   type JobPlatform,
 } from '@/lib/bossclaw/platforms';
 import type { LLMProvider } from '@/store/useSettingsStore';
-import type { PendingItem } from '@/lib/bossclaw/types';
+import type { AppConfig, PendingItem, PlatformCollectOverride } from '@/lib/bossclaw/types';
+import {
+  PLATFORM_OVERRIDE_FIELDS,
+  platformCollectOverrides,
+  setPlatformOverride,
+} from '@/lib/bossclaw/platformConfig';
 import {
   resolveThinkingProfile,
   isThinkingActive,
@@ -153,6 +159,7 @@ const THEME_OPTIONS: { key: ThemeMode; label: string }[] = [
 const SKILL_SCOPE_OPTIONS = [
   { label: '职业画像（profile）', value: 'profile' },
   { label: '岗位匹配评估（job-analysis）', value: 'job-analysis' },
+  { label: '列表标题预筛（title-screen）', value: 'title-screen' },
   { label: '打招呼语（greetings）', value: 'greetings' },
   { label: '岗位定制简历（assistant）', value: 'assistant' },
   { label: '模拟面试（mock-interview）', value: 'mock-interview' },
@@ -184,6 +191,128 @@ function notifyNoKeywordCollectEnabled() {
       </div>
     ),
   });
+}
+
+// ===== 平台级采集设置（覆盖全局） =====
+// 平台卡片内的折叠面板：只影响「搜索采集」，未设置 / 留空的项跟随全局。
+// 解析规则见 lib/bossclaw/platformConfig.ts（configForPlatform）。
+type BoolOverrideKey = 'collectWithoutKeyword' | 'listAutoScroll' | 'titleScreenEnabled' | 'skipContactedJobs';
+type NumOverrideKey = Exclude<keyof PlatformCollectOverride, BoolOverrideKey>;
+
+const OV_ROW: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', minHeight: 26 };
+const OV_LABEL: React.CSSProperties = { fontSize: 12, color: 'var(--fg-muted)', minWidth: 132 };
+const OV_HINT: React.CSSProperties = { fontSize: 11, color: 'var(--fg-subtle)' };
+
+function PlatformCollectOverrideEditor({
+  platform,
+  config,
+  setConfig,
+}: {
+  platform: JobPlatform;
+  config: AppConfig;
+  setConfig: (patch: Partial<AppConfig>) => void;
+}) {
+  const ov = platformCollectOverrides(config, platform);
+  const isBoss = platform === 'boss';
+  const overrideCount = PLATFORM_OVERRIDE_FIELDS.filter((k) => ov[k] !== undefined).length;
+
+  const boolField = (key: BoolOverrideKey, label: string) => {
+    const local = ov[key];
+    return (
+      <div style={OV_ROW} key={key}>
+        <span style={OV_LABEL}>{label}</span>
+        <Segmented
+          size="small"
+          options={[
+            { label: '跟随全局', value: 'inherit' },
+            { label: '开启', value: 'on' },
+            { label: '关闭', value: 'off' },
+          ]}
+          value={local === undefined ? 'inherit' : local ? 'on' : 'off'}
+          onChange={(v) => setConfig(setPlatformOverride(config, platform, key, v === 'inherit' ? undefined : v === 'on'))}
+        />
+        <span style={OV_HINT}>
+          {local === undefined ? `当前：${config[key] ? '开启' : '关闭'}（全局）` : '已覆盖全局'}
+        </span>
+      </div>
+    );
+  };
+
+  const numField = (key: NumOverrideKey, label: string, hint: string, min = 0, max = 999999) => {
+    const local = ov[key];
+    const globalValue = Number(config[key]);
+    return (
+      <div style={OV_ROW} key={key}>
+        <span style={OV_LABEL}>{label}</span>
+        <InputNumber
+          size="small"
+          min={min}
+          max={max}
+          style={{ width: 120 }}
+          placeholder={`全局 ${globalValue}`}
+          value={typeof local === 'number' ? local : null}
+          onChange={(v) => setConfig(setPlatformOverride(config, platform, key, typeof v === 'number' && Number.isFinite(v) ? v : undefined))}
+        />
+        <span style={OV_HINT}>
+          {local === undefined ? `跟随全局（${globalValue}）` : '已覆盖全局'}；{hint}
+        </span>
+      </div>
+    );
+  };
+
+  return (
+    <Collapse
+      size="small"
+      ghost
+      style={{ marginTop: 8 }}
+      defaultActiveKey={overrideCount > 0 ? ['collect'] : undefined}
+      items={[
+        {
+          key: 'collect',
+          label: (
+            <span style={{ fontSize: 12 }}>
+              采集设置（覆盖全局）
+              {overrideCount > 0 && <Tag color="blue" style={{ marginLeft: 6 }}>已覆盖 {overrideCount} 项</Tag>}
+            </span>
+          ),
+          children: (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <div style={{ ...OV_HINT, marginBottom: 2 }}>
+                只影响「搜索采集」。未设置 / 留空的项跟随全局；这里设置的值优先。
+              </div>
+              {boolField('collectWithoutKeyword', '无关键字采集')}
+              {boolField('listAutoScroll', '列表自动滚动')}
+              {numField('listScrollRounds', '下拉轮数上限', '0 = 滚到页面底部 / 连续空轮停止')}
+              {numField('collectSpeedMs', '采集节奏 (ms)', '越大越慢，越接近人工', 400)}
+              {numField('collectPageTimeoutMs', '页面加载上限 (ms)', '搜索页等待就绪的最长时间', 5000)}
+              {numField('listScanMax', '单列表扫描上限', '单次列表最多扫描的卡片数', 20)}
+              {isBoss && numField('recommendTabMax', '推荐 tab 上限', '0 = 采全部推荐 tab')}
+              {isBoss && numField('recommendTabSwitchMs', '推荐 tab 切换间隔 (ms)', '连续切换之间的等待', 1000)}
+              {isBoss && boolField('titleScreenEnabled', '列表标题 AI 预筛')}
+              {isBoss && numField('titleScreenBatchSize', '标题预筛批量', '单次送给 AI 的标题数', 10, 120)}
+              {boolField('skipContactedJobs', '跳过已沟通岗位')}
+              {numField('seenJobsTtlDays', '已扫描索引有效期 (天)', '0 = 不失效')}
+              {numField('maxJobsPerRun', '单次采集上限', '防失控兜底', 1)}
+              <div style={{ marginTop: 4, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <Button
+                  size="small"
+                  disabled={overrideCount === 0}
+                  onClick={() => {
+                    const all = { ...(config.platformCollect || {}) };
+                    delete all[platform];
+                    setConfig({ platformCollect: all });
+                  }}
+                >
+                  清除本平台覆盖
+                </Button>
+                <span style={OV_HINT}>清空数字 / 选「跟随全局」即可恢复继承。</span>
+              </div>
+            </div>
+          ),
+        },
+      ]}
+    />
+  );
 }
 
 export default function Settings({ isVisible = true }: { isVisible?: boolean }) {
@@ -1235,6 +1364,8 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
                         条 / 天；0 表示不限，本平台上限 {dailyCap} 条{overCap ? `（原设置 ${storedTarget} 已超出，按上限执行）` : '（按平台侧限制 / 防封号适配）'}
                       </span>
                     </div>
+                    {/* 平台级采集设置：无关键字模式 / 滚动 / 节奏 / 标题筛选项可按平台覆盖全局 */}
+                    <PlatformCollectOverrideEditor platform={p} config={config} setConfig={setConfig} />
                   </div>
                 );
               })}
@@ -1799,6 +1930,10 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
               </div>
             </div>
             <Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0, fontSize: 13 }}>
+              以上是<b>全局默认值</b>。需要某个平台单独设置时（例如 BOSS 用无关键字推荐流、猎聘 / 智联仍按投递方向关键词搜索），
+              到「招聘平台」各平台卡片里的「采集设置（覆盖全局）」单独覆盖；未覆盖的项继续跟随这里。
+            </Paragraph>
+            <Paragraph type="secondary" style={{ marginTop: 6, marginBottom: 0, fontSize: 13 }}>
               开启后，每次「搜索采集」会自动将岗位列表向下滑动以加载更多。已入库岗位将自动根据 URL 去重跳过。
             </Paragraph>
             <Paragraph type="secondary" style={{ marginTop: 6, marginBottom: 0, fontSize: 13 }}>

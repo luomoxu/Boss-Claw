@@ -49,6 +49,7 @@ import { detectWorkSchedule } from '@/lib/bossclaw/workSchedule';
 import { buildSearchQueue, type SearchQueueItem } from '@/lib/bossclaw/searchUrl';
 import { buildPlatformSearchQueue, bossCriteriaFromQueueItem, describePlatformCriteria, type PlatformSearchQueueItem } from '@/lib/bossclaw/platformUrls';
 import { collectFaultScope, platformEnabled, platformLabel, sortedEnabledPlatforms, PLATFORM_IDS, type JobPlatform } from '@/lib/bossclaw/platforms';
+import { configForPlatform, hasPlatformOverrides } from '@/lib/bossclaw/platformConfig';
 import {
   effectiveDailyCapFor, dailySentCountFor, isLockedOut,
   cooldownRemaining, classifyRiskCode, humanDelayMs, SAFETY_LIMITS, resolveCooldownMs, nextCooldownUntil,
@@ -1441,22 +1442,28 @@ export default function Workbench() {
     // —— 不能拿 BOSS cookie 口径去判断猎聘/智联/前程无忧（会误判成未登录而拒绝采集）。
     if (platform === 'boss' && !(await ensureBossLogin())) return 'skip';
     const cfg0 = useSettingsStore.getState().config;
+    // 平台级采集设置：本平台显式覆盖的字段优先，未设置的跟随全局（见 platformConfig.ts）。
+    // 投递节奏 / 安全阈值仍是全局，不受此影响。
+    const cfgP = configForPlatform(cfg0, platform);
     if (isLockedOut(cfg0)) {
       message.warning(`账号处于冷却期（剩余约 ${Math.ceil(cooldownRemaining(cfg0) / 60000)} 分钟），暂不能采集`);
       return 'skip';
     }
     if (!profile) { message.warning('请先在简历中心生成职业画像'); return 'skip'; }
     // 无关键字采集不依赖「投递方向」（方向仅提供关键词），故该模式下不强制先确认方向
-    if (!cfg0.collectWithoutKeyword && !directionPlan?.confirmed) { message.warning('请先到「投递方向」确认方向'); return 'skip'; }
-    if (cfg0.collectWithoutKeyword) addLog('warn', NO_KEYWORD_SETUP_REMINDER);
+    if (!cfgP.collectWithoutKeyword && !directionPlan?.confirmed) { message.warning('请先到「投递方向」确认方向'); return 'skip'; }
+    if (cfgP.collectWithoutKeyword) addLog('warn', NO_KEYWORD_SETUP_REMINDER);
+    if (hasPlatformOverrides(cfg0, platform)) {
+      addLog('info', `采集设置：${platformLabel(platform)} 使用平台覆盖（未覆盖项跟随全局）`);
+    }
     // 搜索队列按平台分源，两条通道口径统一：
     //   BOSS   → searchUrl.ts（官方筛选码 + 城市码表）
     //   其余平台 → platformUrls.ts（城市/薪资/关键词进 URL；猎聘与智联把「基础求职条件」+ HR 活跃度
     //              一并拼进 URL，前程无忧仍只带城市/薪资/关键词）—— 与隐身采集同一构建器
     if (platform === 'boss') await loadBossCityCodes();
     const queue = platform === 'boss'
-      ? filterQueueByRunIds('boss', buildSearchQueue(directionPlan, config), runIds)
-      : filterQueueByRunIds(platform, buildPlatformSearchQueue(platform, directionPlan, config), runIds);
+      ? filterQueueByRunIds('boss', buildSearchQueue(directionPlan, cfgP), runIds)
+      : filterQueueByRunIds(platform, buildPlatformSearchQueue(platform, directionPlan, cfgP), runIds);
     if (!queue.length) {
       if (runIds?.length) {
         // 定向重跑：该组合已不在当前搜索条件中（方向/关键词/城市/求职类型被改过）→ 收口卡片并说明原因
@@ -1502,8 +1509,8 @@ export default function Workbench() {
         locations: config.targetLocations,
         excludedCities: config.excludedCities,
         excludedProvinces: config.excludedProvinces,
-        titleScreen: config.titleScreenEnabled === false ? 'off' : `on:${config.titleScreenBatchSize}`,
-        skipContacted: config.skipContactedJobs !== false,
+        titleScreen: cfgP.titleScreenEnabled === false ? 'off' : `on:${cfgP.titleScreenBatchSize}`,
+        skipContacted: cfgP.skipContactedJobs !== false,
       }));
     } catch {
       // 取不到 skill 正文时宁可不写索引（'' = 不记录），也不能用假指纹把岗位永久标成「已评估」
@@ -1555,9 +1562,9 @@ export default function Workbench() {
       }
     }
 
-    const collectSpeedMs = Math.max(400, Number(config.collectSpeedMs) || 1200);
+    const collectSpeedMs = Math.max(400, Number(cfgP.collectSpeedMs) || 1200);
     // 搜索页加载等待上限：可配置（设置 → 搜索采集范围控制），默认 30s。
-    const pageTimeoutMs = Math.max(5000, Number(config.collectPageTimeoutMs) || 30000);
+    const pageTimeoutMs = Math.max(5000, Number(cfgP.collectPageTimeoutMs) || 30000);
     // ===== 页面就绪判定（以「页面自身事实」为权威）=====
     // 旧口径只看宿主的加载遮罩状态机（导航事件 + 定时器）：事件序列一异常（重定向 / 子框架 /
     // 定时器被新导航顶掉）就会一直判定「加载中」，而页面其实早已可用（日志刷「加载中」但页面正常）。
@@ -1664,11 +1671,11 @@ export default function Workbench() {
 
     addLog('info', `开始可视化采集（${platformLabel(platform)}）：共 ${queue.length} 个搜索组合，${
       platform === 'boss'
-        ? (config.collectWithoutKeyword
+        ? (cfgP.collectWithoutKeyword
           ? '推荐 tab 逐个扫描 → 列表页预筛 → 只对通过的岗位点开详情'
           : '逐岗位平滑滚动 + 高亮 + 点击展开详情')
         : '列表级滚动 + 高亮（不点开详情，详情 JD 按平台详情接口补齐）'
-    }${cfg0.collectWithoutKeyword ? '（无关键字模式：链接不带 query，仅保留城市 / 求职类型等筛选）' : ''}`);
+    }${cfgP.collectWithoutKeyword ? '（无关键字模式：链接不带 query，仅保留城市 / 求职类型等筛选）' : ''}`);
 
     // ===== BOSS 无关键字采集 = 推荐 tab 采集 + 列表页两级筛选 =====
     // 每个搜索组合（一个城市）依次走：
@@ -1676,14 +1683,15 @@ export default function Workbench() {
     //   → ③ 只对通过的岗位点开详情（allowKeys）
     // 失败口径：tab 发现失败 → 只采当前列表（等价改造前）；AI 标题筛选失败 → 不筛标题（不误杀）。
     // 只采 BOSS：其余平台没有这套「推荐 tab + 内联详情」的页面结构。
-    const recommendTabMode = platform === 'boss' && Boolean(config.collectWithoutKeyword);
+    const recommendTabMode = platform === 'boss' && Boolean(cfgP.collectWithoutKeyword);
     const runRecommendTabsForItem = async (
       tabId: string,
       baseRun: Partial<TaskRun>,
       runId: string,
       qi: number
     ): Promise<number> => {
-      const cfg = useSettingsStore.getState().config;
+      // 推荐 tab 只存在于 BOSS 无关键字模式；这里按 BOSS 的平台覆盖解析当前生效值
+      const cfg = configForPlatform(useSettingsStore.getState().config, 'boss');
       const seen = loadSeenJobs();
       const seenTtlMs = Math.max(0, Number(cfg.seenJobsTtlDays) || 0) * 86400000;
       // 空串 = 本轮拿不到 skill 正文：不读也不写索引（宁可重扫，也不能用假指纹长期挡住岗位）
@@ -1734,8 +1742,8 @@ export default function Workbench() {
           scanMax,
           settleMs: collectSpeedMs,
           listTimeoutMs: pageTimeoutMs,
-          autoScroll: config.listAutoScroll !== false,
-          scrollRounds: Number(config.listScrollRounds) > 0 ? Number(config.listScrollRounds) : 0,
+          autoScroll: cfgP.listAutoScroll !== false,
+          scrollRounds: Number(cfgP.listScrollRounds) > 0 ? Number(cfgP.listScrollRounds) : 0,
           platform: 'boss',
         });
         if (!visualActiveRef.current) break;
@@ -1822,7 +1830,7 @@ export default function Workbench() {
           autoScroll: true,
           // 详情阶段要「从列表顶部重新走一遍」找到白名单卡片，不设下拉轮数上限（到底/连续空轮自停）
           scrollRounds: 0,
-          maxJobs: Math.max(1, Math.min(allowed.length, Number(config.maxJobsPerRun) || allowed.length)),
+          maxJobs: Math.max(1, Math.min(allowed.length, Number(cfgP.maxJobsPerRun) || allowed.length)),
           platform: 'boss',
           allowKeys: allowed.map((c) => c.key),
         });
@@ -1948,9 +1956,9 @@ export default function Workbench() {
       await visualCollectInTab(tabId, {
         settleMs: collectSpeedMs,
         listTimeoutMs: pageTimeoutMs,
-        autoScroll: config.listAutoScroll !== false,
-        scrollRounds: Number(config.listScrollRounds) > 0 ? Number(config.listScrollRounds) : 0,
-        maxJobs: Math.max(1, Number(config.maxJobsPerRun) || 1000),
+        autoScroll: cfgP.listAutoScroll !== false,
+        scrollRounds: Number(cfgP.listScrollRounds) > 0 ? Number(cfgP.listScrollRounds) : 0,
+        maxJobs: Math.max(1, Number(cfgP.maxJobsPerRun) || 1000),
         // 平台自检用：preload 以页面 hostname 为权威，不一致时回传 platform-mismatch 诊断
         platform,
       });
@@ -2004,6 +2012,7 @@ export default function Workbench() {
     if (cfxActiveRef.current) return 'skip';
     ingestedSeenRef.current = new Set(); // 新一采集批重置去重，允许重新扫描
     const cfg0 = useSettingsStore.getState().config;
+    const cfgP = configForPlatform(cfg0, platform);
     const cfx0 = cfg0.camoufox || { enabled: false, os: 'windows', pages: 1, prefer: false };
     if (!cfx0.enabled) { message.warning('请在「设置 → Camoufox 隐身引擎」启用后再使用'); return 'skip'; }
     if (isLockedOut(cfg0)) {
@@ -2012,8 +2021,11 @@ export default function Workbench() {
     }
     if (!profile) { message.warning('请先在简历中心生成职业画像'); return 'skip'; }
     // 无关键字采集不依赖「投递方向」（方向仅提供关键词），故该模式下不强制先确认方向
-    if (!cfg0.collectWithoutKeyword && !directionPlan?.confirmed) { message.warning('请先到「投递方向」确认方向'); return 'skip'; }
-    if (cfg0.collectWithoutKeyword) addLog('warn', NO_KEYWORD_SETUP_REMINDER);
+    if (!cfgP.collectWithoutKeyword && !directionPlan?.confirmed) { message.warning('请先到「投递方向」确认方向'); return 'skip'; }
+    if (cfgP.collectWithoutKeyword) addLog('warn', NO_KEYWORD_SETUP_REMINDER);
+    if (hasPlatformOverrides(cfg0, platform)) {
+      addLog('info', `采集设置：${platformLabel(platform)} 使用平台覆盖（未覆盖项跟随全局）`);
+    }
     const st = await camoufoxStatus(platform);
     if (!st.ready) { message.warning('Camoufox 引擎未就绪：' + (st.message || '请到设置页检测并安装 camoufox')); return 'skip'; }
     if (!st.engine?.loggedIn) {
@@ -2023,8 +2035,8 @@ export default function Workbench() {
     }
     if (platform === 'boss') await loadBossCityCodes();
     const queue = platform === 'boss'
-      ? filterQueueByRunIds('boss', buildSearchQueue(directionPlan, config), runIds)
-      : filterQueueByRunIds(platform, buildPlatformSearchQueue(platform, directionPlan, config), runIds);
+      ? filterQueueByRunIds('boss', buildSearchQueue(directionPlan, cfgP), runIds)
+      : filterQueueByRunIds(platform, buildPlatformSearchQueue(platform, directionPlan, cfgP), runIds);
     if (!queue.length) {
       if (runIds?.length) {
         for (const rid of runIds) {
@@ -2053,7 +2065,7 @@ export default function Workbench() {
     let queueAborted = false;
     // 定向重新采集（runIds 非空）语义 = 用户明确要求重跑该组合 → 忽略断点续采强制重采
     const forceRecheck = Boolean(runIds?.length);
-    addLog('info', `开始 Camoufox 隐身采集（${pfLabel}）：共 ${queue.length} 个搜索组合（指纹伪装：${cfx0.os}，页数：${cfx0.pages}）${cfg0.collectWithoutKeyword ? '（无关键字模式：链接不带关键词，仅保留城市等筛选）' : ''}`);
+    addLog('info', `开始 Camoufox 隐身采集（${pfLabel}）：共 ${queue.length} 个搜索组合（指纹伪装：${cfx0.os}，页数：${cfx0.pages}）${cfgP.collectWithoutKeyword ? '（无关键字模式：链接不带关键词，仅保留城市等筛选）' : ''}`);
     const cfxRunIds: string[] = [];
     for (let qi = 0; qi < queue.length; qi += 1) {
       const item = queue[qi];
@@ -3126,6 +3138,9 @@ export default function Workbench() {
     visualItem.index || visualItem.total ? `${visualItem.index}/${visualItem.total}` : '准备中…'
   }${visualItem.title ? ` ${visualItem.title}` : ''}${visualItem.company ? ` · ${visualItem.company}` : ''}`;
 
+  // 无关键字采集提醒按「各平台实际生效值」判断（平台覆盖可单独开启，不必全局开）
+  const noKeywordPlatforms = searchPlatforms.filter((p) => configForPlatform(config, p).collectWithoutKeyword);
+
   return (
     <div className="workbench">
       <div className="workbench-center">
@@ -3183,14 +3198,14 @@ export default function Workbench() {
 
           {/* 无关键字采集（随机岗位推荐）前置提醒：岗位完全由平台按账号内的求职意向推荐，
               资料未完善会采到不相关岗位，故在卡片内常驻提醒并提供直达在线简历入口 */}
-          {config.collectWithoutKeyword && (
+          {noKeywordPlatforms.length > 0 && (
             <Alert
               type="info"
               showIcon
               style={{ marginTop: 10, padding: '6px 10px', background: '#fff' }}
               message={
                 <span style={{ fontSize: 12 }}>
-                  无关键字采集：岗位按账号内求职意向推荐，请先完善在线简历与求职意向。
+                  无关键字采集（{noKeywordPlatforms.map(platformLabel).join('、')}）：岗位按账号内求职意向推荐，请先完善在线简历与求职意向。
                   <Button
                     size="small"
                     type="link"

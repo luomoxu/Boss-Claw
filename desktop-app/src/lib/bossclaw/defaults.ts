@@ -124,6 +124,10 @@ export const DEFAULT_CONFIG: AppConfig = {
     zhaopin: { enabled: false, priority: 3, dailyTarget: PLATFORM_DEFAULT_DAILY_TARGET.zhaopin },
     job51: { enabled: false, priority: 4, dailyTarget: PLATFORM_DEFAULT_DAILY_TARGET.job51 },
   },
+  // 平台级采集设置覆盖：只写「该平台与全局不同」的项，未写的字段沿用全局。
+  // 默认空对象 = 所有平台完全跟随全局设置。解析规则见 platformConfig.ts::configForPlatform，
+  // UI 在「设置 → 招聘平台 → 各平台采集设置」。
+  platformCollect: {},
   // Camoufox 隐身引擎子配置（os / pages / prefer 与 engineMode='camoufox' 共用）；
   // 启用标志在设置页由 engineMode 切换时联动翻转（workbench 仍以本 enabled 作为
   // 「隐身通道是否启用」的功能开关判据）。

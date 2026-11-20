@@ -206,6 +206,13 @@ export interface AppConfig {
    */
   platforms: Record<JobPlatform, { enabled: boolean; priority: number; dailyTarget: number }>;
   /**
+   * 平台级采集设置（可选）：某平台在这里显式设置的字段覆盖全局同名字段，未设置的沿用全局。
+   * 只覆盖「搜索采集」相关设置（无关键字模式 / 滚动 / 节奏 / 标题筛选等），投递相关仍为全局。
+   * 典型场景：BOSS 用无关键字推荐流，猎聘/智联仍按投递方向关键词搜索。
+   * 生效口径见 platformConfig.ts::configForPlatform；UI 在「设置 → 招聘平台 → 各平台采集设置」。
+   */
+  platformCollect?: Partial<Record<JobPlatform, PlatformCollectOverride>>;
+  /**
    * Camoufox 隐身引擎（可选增强，来自 boss-auto-job-main 的方案）：
    * C++ 级 Firefox 指纹伪装 + humanize 类人行为，用于降低「正常操作被误判为机器人（code 37）」的概率。
    * 仅作为可选通道；不绕过验证码/账户验证（code 35/36/32 仍立即停止交人工）。
@@ -249,6 +256,27 @@ export interface AppConfig {
      */
     contextUsage: 'full' | 'compact';
   };
+}
+
+/**
+ * 平台级采集设置覆盖（全部可选）。未设置的字段 = 跟随全局；设置后仅对该平台生效。
+ * 字段与 AppConfig 同源同名，生效口径见 platformConfig.ts::configForPlatform。
+ */
+export interface PlatformCollectOverride {
+  /** 无关键字采集：true=该平台走推荐流，false=该平台按关键词搜索；不设置=跟随全局 */
+  collectWithoutKeyword?: boolean;
+  listAutoScroll?: boolean;
+  listScrollRounds?: number;
+  collectSpeedMs?: number;
+  collectPageTimeoutMs?: number;
+  listScanMax?: number;
+  recommendTabMax?: number;
+  recommendTabSwitchMs?: number;
+  titleScreenEnabled?: boolean;
+  titleScreenBatchSize?: number;
+  skipContactedJobs?: boolean;
+  seenJobsTtlDays?: number;
+  maxJobsPerRun?: number;
 }
 
 export interface ProfileFacts {
