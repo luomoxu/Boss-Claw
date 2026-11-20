@@ -138,7 +138,7 @@ function safeOn(channel, handler) {
 const SKILLS_DIR = path.join(app.getAppPath(), 'skills');
 const CUSTOM_SKILLS_DIR = () => path.join(app.getPath('userData'), 'skills');
 const SKILL_ID_RE = /^[a-z0-9-]+$/;
-const SKILL_SCOPES = ['profile', 'job-analysis', 'greetings', 'assistant', 'mock-interview'];
+const SKILL_SCOPES = ['profile', 'job-analysis', 'title-screen', 'greetings', 'assistant', 'mock-interview'];
 
 // 出厂内置技能（随安装包分发、只读，不提供删除；用户可用开关停用）。
 // 其余技能（设置页导入 / 新建 → userData/skills，或用户自行放进 skills/ 目录）都视为
@@ -146,6 +146,7 @@ const SKILL_SCOPES = ['profile', 'job-analysis', 'greetings', 'assistant', 'mock
 const SHIPPED_SKILL_IDS = new Set([
   'resume-profile',
   'job-analysis',
+  'title-screen',
   'greetings',
   'tailor-cv',
   'jd-reading',

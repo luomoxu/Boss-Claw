@@ -765,7 +765,7 @@ export function resetLLMUsageStats(): void {
 // 不再重复计费。任何输入变化（简历/画像/岗位描述/自定义提示词/模型/温度）都会自然产生新 key。
 // 缓存只存成功结果；失败与测试连接（ping）一律不缓存。
 
-export type AICacheScope = 'profile' | 'job-analysis' | 'greetings' | 'assistant' | 'mock-interview';
+export type AICacheScope = 'profile' | 'job-analysis' | 'title-screen' | 'greetings' | 'assistant' | 'mock-interview';
 
 export interface AICacheMeta {
   /** 缓存作用域：画像 / 岗位分析 / 打招呼语 / 求职助手（用于分类管理与清空） */
@@ -801,6 +801,8 @@ const AI_CACHE_DEFAULT_TTL: Record<AICacheScope, number> = {  // 画像 / 打招
   greetings: 90 * 24 * 3600 * 1000,
   // 岗位分析：key 含岗位描述全文，描述更新自动失效；TTL 仅防「很久以前的同 jobId 缓存」被命中
   'job-analysis': 7 * 24 * 3600 * 1000,
+  // 列表标题预筛：key 含整批标题与筛选口径,列表更新/技能改动自动失效
+  'title-screen': 7 * 24 * 3600 * 1000,
   // 求职助手（定制简历/求职信、评估报告）：key 含简历/画像/岗位全文，内容变化自动失效
   assistant: 7 * 24 * 3600 * 1000,
   // 模拟面试：每问都依赖前文，缓存永远不会命中，**实际不启用**；这里仅为类型齐备
@@ -812,6 +814,7 @@ const AI_SCOPE_LABELS: Record<AICacheScope, string> = {
   profile: '职业画像',
   greetings: '打招呼语',
   'job-analysis': '岗位分析',
+  'title-screen': '列表标题预筛',
   assistant: '定制简历 / 求职助手',
   'mock-interview': '模拟面试',
 };

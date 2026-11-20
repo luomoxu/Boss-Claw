@@ -42,7 +42,7 @@
 
 * **定制简历**：侧栏「定制简历」页输入岗位 JD，AI 生成定制摘要 / 量化经历 / 求职信 / 技能缺口 / 优化建议，仅引用简历真实事实，AI 输出不达标回退本地规则兜底。
 
-* **AI 技能体系**：`skills/` 内置 7 项（resume-profile / job-analysis / greetings / tailor-cv / jd-reading / great-resume / job-match，SKILL.md），按作用域注入 system prompt；greetings 即「工作台定制的打招呼语提示词」统一口径，驱动工作台岗位招呼语 / 简历中心 JD 预览 / 定制简历求职信；jd-reading（读 JD 四层拆解，assistant 作用域，默认开启）、great-resume（经历酥化，assistant 作用域）、job-match（证据驱动岗位匹配，job-analysis 作用域）为增强技能，可在设置页手动启用；技能入口每次从磁盘重读（`reloadSkills()`）；支持自定义技能导入 / 新建 / 删除（`userData/skills`，白名单防路径穿越）；设置页「AI 技能」卡片管理，自行导入 / 新建的技能、以及自行放进 `skills/` 目录的非出厂技能都显示「删除」入口（出厂内置技能按 `SHIPPED_SKILL_IDS` 只读，仅可停用；目录只读时删除自动降级为屏蔽名单 `userData/skills-removed.json`）。
+* **AI 技能体系**：`skills/` 内置 8 项（resume-profile / job-analysis / title-screen / greetings / tailor-cv / jd-reading / great-resume / job-match，SKILL.md），按作用域注入 system prompt；greetings 即「工作台定制的打招呼语提示词」统一口径，驱动工作台岗位招呼语 / 简历中心 JD 预览 / 定制简历求职信；title-screen（列表页标题级初筛，title-screen 作用域）决定「一眼就不该投」的排除口径，代码只保留通用兜底，用户可编辑或新建同作用域技能替换；jd-reading（读 JD 四层拆解，assistant 作用域，默认开启）、great-resume（经历酥化，assistant 作用域）、job-match（证据驱动岗位匹配，job-analysis 作用域）为增强技能，可在设置页手动启用；技能入口每次从磁盘重读（`reloadSkills()`）；支持自定义技能导入 / 新建 / 删除（`userData/skills`，白名单防路径穿越）；设置页「AI 技能」卡片管理，自行导入 / 新建的技能、以及自行放进 `skills/` 目录的非出厂技能都显示「删除」入口（出厂内置技能按 `SHIPPED_SKILL_IDS` 只读，仅可停用；目录只读时删除自动降级为屏蔽名单 `userData/skills-removed.json`）。
 
 * **LLM 预设**：OpenAI / DeepSeek / 通义千问 / 智谱 GLM / 硅基流动 / 火山方舟 / 自定义（OpenAI 兼容端点）。
 
@@ -144,9 +144,10 @@ desktop-app/
 ├── resources/
 │   ├── icon.ico / icon.png
 │   └── docs/                         # 「使用前必读」等随包文档（extraResources）
-├── skills/                          # AI 技能库（SKILL.md，内置 7 项）
+├── skills/                          # AI 技能库（SKILL.md，内置 8 项）
 │   ├── resume-profile/SKILL.md
 │   ├── job-analysis/SKILL.md
+│   ├── title-screen/SKILL.md
 │   ├── greetings/SKILL.md
 │   ├── tailor-cv/SKILL.md
 │   ├── jd-reading/SKILL.md

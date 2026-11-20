@@ -5,7 +5,8 @@
 // 点开详情再交给 analyzeJob，既多发一次请求（风控），又白烧一次完整 JD 评分。
 //
 // 做法：把一批标题交给模型做「标题层初筛」，只标出**一眼就不该投**的，拿不准的一律保留
-// （宁可多开一次详情，不可误杀）。判定口径对齐 JD 筛选标准 v3.4（硬门槛 + H10 强 AI 关联岗）。
+// （宁可多开一次详情，不可误杀）。判定口径来自 `title-screen` 作用域技能（设置页可新建/编辑/停用），
+// 软件只内置一份通用兜底——同一套技能机制也能承载用户自己的行业/职级标准，无需改代码。
 //
 // 与 analyzeJob 的关系：这里只是**前置剪刀**，不做打分、不写决策。通过者在详情阶段仍会
 // 走完整的 analyzeJob（原过滤 + 100 分制评分），两边结论不冲突——初筛判错的唯一代价是多开一次详情。
@@ -13,6 +14,7 @@
 // 失败降级：AI 未配置 / 调用失败 / 返回不可解析 → **不筛标题**，直接把全部岗位交给详情阶段
 // （等价改造前的行为），并在日志里明确写一条，避免用户误以为「筛选生效了但没效果」。
 import { cachedCallModel } from './llm';
+import { BOSS_SKILLS, reloadSkills, skillInstructionsFor } from './skills';
 import type { AppConfig, Profile } from './types';
 
 export interface TitleScreenItem {
@@ -47,30 +49,22 @@ export interface TitleScreenResult {
 
 const DEFAULT_BATCH_SIZE = 50;
 
-const SYSTEM_PROMPT = `你是高级技术管理岗的「标题级」职位初筛器。候选人应聘的是 CTO / 技术总监 / 研发负责人 / 技术负责人 / 架构师这一层。
+// 软件层只固定「任务 + 输入/输出契约 + 宁多勿少」：
+// 具体筛选口径属于用户配置，来自 title-screen 作用域技能（可新建/编辑/停用），
+// 代码里只保留一份通用兜底口径（skills.ts 的 title-screen 内置技能），
+// 不把某一位求职者的行业/职级/技术域写死进软件。
+const TASK_PROMPT = `你是「列表页标题级」职位初筛器。输入是一批岗位的**列表页信息**（标题、公司、薪资、地点、卡片标签），没有 JD 正文。
 
-【任务】输入是一批岗位的**列表页信息**（标题、公司、薪资、地点、卡片标签），没有 JD 正文。
-请只标出「一眼就不该投」的岗位；拿不准的一律保留。宁可多开一次详情，不可误杀。
-
-【排除（命中任一即排除）】
-A. 技术域不对口：无人机、飞控、自动驾驶/智驾、机器人、具身智能、芯片、半导体、固件、嵌入式、硬件、PCB、射频、光学、仿真、生物医药、化工、能源工程、土木建筑、电气机械、纺织服装、医疗健康、餐饮等非软件技术域。
-B. 岗位性质不对：销售、售前、实施、驻场、外包、客服、运营、测试、运维值班、技术支持、数据开发、DBA、算法、产品经理、项目经理（非技术一号位）。
-C. 层级明显不对：初级、专员、助理、实习生；纯执行开发/工程师岗（如「Java 开发工程师」「软件测试工程师」），除非同时是负责人/总监/架构。
-D. 强 AI 关联岗：大模型、算法、Agent 平台、AIGC 生产管线本身是核心产出（不是「用 AI 给业务提效」）。
-
-【保留（不要排除）】CTO、技术总监、研发总监、技术负责人、研发负责人、架构师、技术经理、产研负责人、VP；以及任何看不准的。
-
-【反例】
-- 「无人机系统总师」：层级很高，但技术域不对口 → 排除。
-- 「智驾智仓开发专家」：技术域不对口 → 排除。
-- 「营养医师」「成衣服装供应链总监」：行业/职能完全不对口 → 排除。
-- 「AI 应用架构师（Java）」：以 Java/业务架构为主，AI 只是应用层 → 保留。
-- 「商旅产研总监」：交易/业务系统为主 → 保留。
+【任务】按【筛选口径】只标出「一眼就不该投」的岗位；拿不准的一律保留。宁可多开一次详情，不可误杀。
 
 【输出】只输出 JSON：{"exclude":[{"i":1,"reason":"一句话原因"}]}
 - i 是输入数组里的序号（从 1 开始）。
 - 没有要排除的就输出 {"exclude":[]}。
+- reason 不超过 30 字，写具体原因（如「方向不符：无人机」）。
 - 不要输出任何解释性文字。`;
+
+/** 技能全部停用时的兜底口径（与内置 title-screen 技能正文一致，保证功能不丢） */
+const FALLBACK_RULES = BOSS_SKILLS.find((s) => s.id === 'title-screen')?.instructions || '';
 
 /** 从画像提炼一段「候选人锚点」，让标题筛选知道我们是谁（取不到也没关系）。 */
 export function buildCandidateBrief(profile?: Profile | null): string {
@@ -129,8 +123,13 @@ export async function screenTitles(
   if (!items.length) return result;
 
   const batchSize = Math.max(10, Math.min(120, Number(options.batchSize) || DEFAULT_BATCH_SIZE));
+  // 每轮重读 skills/*/SKILL.md：用户改了筛选口径即时生效（与 analyzeJob 同一语义）。
+  await reloadSkills();
+  const skillRules = await skillInstructionsFor('title-screen');
+  const rules = skillRules
+    || `\n\n【AI 技能 · 列表标题预筛（默认口径）】（由软件 skills 层兜底注入，必须遵守）\n${FALLBACK_RULES}`;
   const brief = buildCandidateBrief(options.profile);
-  const systemPrompt = brief ? `${SYSTEM_PROMPT}\n\n【候选人背景】\n${brief}` : SYSTEM_PROMPT;
+  const systemPrompt = TASK_PROMPT + rules + (brief ? `\n\n【候选人背景】\n${brief}` : '');
 
   for (let start = 0; start < items.length; start += batchSize) {
     if (options.shouldStop?.()) break;
@@ -144,9 +143,9 @@ export async function screenTitles(
         ],
         options.model,
         { maxTokens: 1600, temperature: 0 },
-        // 复用 job-analysis 缓存域：缓存 key 已包含完整 messages，不会与单岗分析互相污染；
-        // 「清空岗位分析缓存」时一并清掉标题筛选结果，语义上也符合预期。
-        { scope: 'job-analysis' }
+        // 独立缓存域：缓存 key 已包含完整 messages（含筛选口径），口径一改自动失效；
+        // 与单岗分析分开统计，设置页清缓存时一并清空。
+        { scope: 'title-screen' }
       );
       parseExclusions(raw, batch, excluded);
       result.usedAI = true;
