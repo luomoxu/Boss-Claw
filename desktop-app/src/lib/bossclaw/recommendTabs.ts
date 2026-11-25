@@ -3,7 +3,9 @@
 // 背景：BOSS `/web/geek/jobs`（不带 query）与猎聘 `/zhaopin/`（不带 key）都会按账号内的
 // 「求职意向 / 求职期望」生成推荐列表，页内各意向是一个 tab：
 //   BOSS：`推荐 / 技术经理(成都) / 架构师(成都) / 技术总监(成都) …`
-//   猎聘：`Java开发 / 架构师 / 技术经理 …`（`expect-row` 内的 `button.expect-item`）
+//   猎聘（两套结构，见下方 PROFILES.liepin）：
+//     · 搜索页 `.expect-row` 内的 `button.expect-item`
+//     · 登录态首页 `div.switch-title-item[data-nick="switch-item"]`（顶部 tab 头）
 // **切 tab 是 SPA 状态，URL 不变**，所以只能靠点击切换，不能拼 URL 直达。
 //
 // 为什么不走推荐接口：站方的推荐 API 属于强风控面（且不在白名单内），本模块只通过
@@ -33,11 +35,12 @@ interface RecommendTabProfile {
 /**
  * 平台差异表。
  *
- * 猎聘选择器来源（非猜测）：官方 `search-jobs-v2` 前端 bundle 的求职期望组件为
+ * 猎聘搜索页选择器来源（非猜测）：官方 `search-jobs-v2` 前端 bundle 的求职期望组件为
  *   `<div class="expect-row"><button class="expect-item [is-active]" title="期望名">期望名</button>
  *    … <a class="expect-edit">编辑求职期望</a></div>`
  * 列表容器是 `#lp-search-job-list.job-list-box`（页面自己拦截 wheel 改它的 scrollTop），
  * 卡片是 `div.job-list-item > div.job-card-pc-container`（新版）/ `div.jobCardPcContainer`（旧版）。
+ * 登录态首页结构见 `PROFILES.liepin.tabSelector` 注释（2026-11-25 用户真机 outerHTML）。
  */
 const PROFILES: Record<RecommendTabPlatform, RecommendTabProfile> = {
   boss: {
@@ -47,9 +50,25 @@ const PROFILES: Record<RecommendTabPlatform, RecommendTabProfile> = {
     scrollSelector: 'html',
   },
   liepin: {
-    tabSelector: '.expect-row .expect-item',
-    // `is-active` 是站点自己的选中态 class（见 search-jobs-v2 bundle）；读不到就按「未知」处理。
-    activeTabSelector: '.expect-row .expect-item.is-active',
+    // 猎聘有**两套**求职意向 tab 结构，必须同时覆盖（只认其中一套会静默退化成「只采当前列表」）：
+    //   ① 搜索页 search-jobs-v2：`.expect-row` 内 `button.expect-item`，选中态 `.is-active`
+    //   ② 登录态首页（2026-11-25 用户真机 outerHTML）：
+    //        <div class="switch-title-left--xxxx">
+    //          <div class="switch-title-item--xxxx switch-title-item-active--xxxx" data-nick="switch-item">
+    //            <span class="tab-item-title--xxxx">架构师</span></div> …
+    //          <div class="switch-title-right--xxxx" data-nick="add-job-want">编辑求职期望</div>
+    //        </div>
+    //        <div class="switch-sort--xxxx">
+    //          <div class="switch-sort-active--xxxx" data-nick="sort-type-mix">综合</div>
+    //          <div class="" data-nick="sort-type-new">最新</div></div>
+    //      ⚠️ 只能按 `data-nick="switch-item"` 认 tab：同一行里「综合 / 最新」是**排序**，
+    //      不是求职意向；「编辑求职期望」是入口按钮。用 `[class*="switch-title-item"]` 会把
+    //      它们一并当成 tab（点排序条只会换排序，白等一次列表变化超时）。data-nick 是站点埋点
+    //      属性，哈希类名（--xxxx 后缀）每次构建都会变，不能写死。
+    //      选中态是**追加**一个 `switch-title-item-active--xxxx` 类，同样只能子串匹配。
+    tabSelector: '[data-nick="switch-item"], .expect-row .expect-item',
+    // 读不到就按「未知」处理（调用方把第一个 tab 当默认选中）。
+    activeTabSelector: '[data-nick="switch-item"][class*="switch-title-item-active"], .expect-row .expect-item.is-active',
     cardSelector: 'div.job-list-item, div[class*="job-card-pc-container"], div[class*="jobCardPcContainer"]',
     nonTabLabels: ['编辑求职期望'],
     // 首页（无关键字采集入口）没有内部列表滚动容器，整页由 window 滚动：
@@ -59,6 +78,12 @@ const PROFILES: Record<RecommendTabPlatform, RecommendTabProfile> = {
 };
 
 const TAB_POLL_INTERVAL_MS = 600;
+
+// 猎聘登录态首页的 `switch-box` 是登录信息就绪后**异步挂载**的（首屏先出 SEO 模块），
+// 页面刚打开就查一次很容易 0 命中、被误判成「没有 tab」而退化成只采当前列表。
+// 有限次轮询兜住这段渲染窗口；查询本身有超时，不会无限等。
+const TAB_DISCOVER_ATTEMPTS = 3;
+const TAB_DISCOVER_INTERVAL_MS = 1000;
 
 function profileFor(platform: RecommendTabPlatform | undefined): RecommendTabProfile | null {
   return PROFILES[platform ?? 'boss'] ?? null;
@@ -105,13 +130,30 @@ async function queryTexts(selector: string, limit: number, tabId?: string, timeo
   }
 }
 
+/** 首次 0 命中时做有限轮询（见 TAB_DISCOVER_ATTEMPTS 注释）；真正查询失败立即返回。 */
+async function queryTabTextsWithPoll(
+  selector: string,
+  limit: number,
+  tabId?: string,
+  timeoutMs = 8000
+): Promise<{ texts: string[]; error?: string }> {
+  let last: { texts: string[]; error?: string } = { texts: [] };
+  for (let attempt = 0; attempt < TAB_DISCOVER_ATTEMPTS; attempt += 1) {
+    last = await queryTexts(selector, limit, tabId, timeoutMs);
+    if (last.error) return last;
+    if (last.texts.some(Boolean)) return last;
+    if (attempt < TAB_DISCOVER_ATTEMPTS - 1) await sleep(TAB_DISCOVER_INTERVAL_MS);
+  }
+  return last;
+}
+
 /** 发现推荐 tab（按页面顺序，已过滤噪声文案与重复项）。 */
 export async function discoverRecommendTabs(
   opts: { platform?: RecommendTabPlatform; tabId?: string; timeoutMs?: number } = {}
 ): Promise<DiscoverTabsResult> {
   const profile = profileFor(opts.platform);
   if (!profile) return { tabs: [], activeKnown: false, error: '该平台不支持推荐 tab 采集' };
-  const { texts, error } = await queryTexts(profile.tabSelector, 40, opts.tabId, opts.timeoutMs ?? 8000);
+  const { texts, error } = await queryTabTextsWithPoll(profile.tabSelector, 40, opts.tabId, opts.timeoutMs ?? 8000);
   if (error) return { tabs: [], activeKnown: false, error };
   const excluded = new Set(profile.nonTabLabels);
   const seen = new Set<string>();
@@ -123,7 +165,9 @@ export async function discoverRecommendTabs(
     seen.add(text);
     tabs.push({ label: text, index: tabs.length });
   }
-  if (!tabs.length) return { tabs: [], activeKnown: false, error: '未在页面找到推荐 tab（选择器无命中）' };
+  if (!tabs.length) {
+    return { tabs: [], activeKnown: false, error: `未在页面找到推荐 tab（选择器无命中，已轮询 ${TAB_DISCOVER_ATTEMPTS} 次）` };
+  }
 
   // 选中态：读得到就标注，避免把「已经是当前 tab」再点一次白等一个超时。
   let activeKnown = false;
@@ -190,6 +234,14 @@ export async function scrollListToTop(tabId?: string, platform?: RecommendTabPla
     await b.uiExec('scroll', { selector: profile?.scrollSelector || 'html', dy: -200000 }, 6000, tabId);
   } catch {
     /* 滚动失败不影响后续扫描（scan 自己也会滚） */
+  }
+  if ((profile?.scrollSelector || 'html') === 'html') return; // BOSS 已经在上面滚过 document，别重复调用
+  try {
+    // 猎聘**登录态首页**恰好相反：列表容器不可滚、整页由 window 滚动，上面那次 scrollBy
+    // 落在 `.job-list-box` 上是空操作。补一次 document 归位；搜索页上这是无副作用的多余调用。
+    await b.uiExec('scroll', { selector: 'html', dy: -200000 }, 6000, tabId);
+  } catch {
+    /* 同上 */
   }
 }
 

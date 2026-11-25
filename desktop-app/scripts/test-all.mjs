@@ -76,6 +76,10 @@ const SUITES = [
   // 2026-11-25：登录态首页推荐卡把城市并进标题且括号拆成独立 span → 地点被写成「【」，
   // 下游「不在目标城市」硬约束误拦整批岗位。守住脏值作废 + 标题清理口径（两处搬运实现一致）
   'liepin-card-fields-regression.mjs',
+  // 2026-11-25：登录态首页的求职意向 tab 是 switch-title-item[data-nick="switch-item"]，
+  // 与搜索页 .expect-row .expect-item 是两套 DOM。只认一套 → 0 tab → **静默**退化成
+  // 「只采当前推荐列表」（任务照常成功）。守住两套选择器与「排序条不得当 tab」
+  'liepin-recommend-tabs-regression.mjs',
   'liepin-url-regression.mjs',
   'zhaopin-jd-regression.mjs',
   'zhaopin-url-regression.mjs',

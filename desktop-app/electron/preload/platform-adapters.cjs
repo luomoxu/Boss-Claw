@@ -219,6 +219,14 @@ const PLATFORM_FIELD_SELECTORS = Object.freeze({
     ],
     location: [
       // 真机：地点写在 jobTitleBox 内「【城市-区】」的 ellipsis-1 span 里（与标题同容器）
+      //
+      // 2026-11-25 登录态首页真机源码：整个地点块是 `<div class="jobDqBox--xxx">`，内部把括号
+      // 拆成两个 span：`<span class="dqBracket--xxx">【</span><span class="ellipsis-1">成都</span>
+      // <span class="dqBracket--xxx">】</span>`。**必须先取 jobDqBox 拿到完整「【成都】」**：
+      // 下面的 `[class*="dq"]`（区分大小写）匹配不到驼峰的 jobDqBox，只会命中第一个
+      // dqBracket 的「【」——这正是「岗位地点【不在目标城市」误拦整批岗位的来源。
+      // （归一化只剥括号，最终仍是「成都」；保留 dq 兜底是给连字符/灰度模板用。）
+      '[class*="jobDqBox"]',
       '[class*="job-dq"]',
       '[class*="dq"]',
       '[class*="area"]',
