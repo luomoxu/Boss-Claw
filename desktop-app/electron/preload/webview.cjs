@@ -1990,9 +1990,11 @@ function collectCards(quiet = false) {
     if (!content || content.length > 900) return false;
     // 必须是真实岗位卡：含 job_detail 链接（智联无锚点变体则认主进程标注的详情 URL）
     // 或薪资文本（含「元」后缀，如智联「9000-10000元」——排除筛选栏 / 无关 li）
+    // 猎聘新版卡既无锚点也无主进程注解，只能靠薪资文本判定 —— 其数字可能是字体混淆的
+    // PUA 码位，必须先还原再匹配，否则整页卡片会被判成「无效卡」而一张都采不到。
     return Boolean(el.querySelector?.(LINK_SELECTOR))
       || Boolean(el.getAttribute?.('data-bossclaw-jobdetail'))
-      || SALARY_TEXT_RE.test(content);
+      || SALARY_TEXT_RE.test(decodeSalaryDigits(content));
   });
   // 「像列表容器」的候选：内部装着 **≥2 个互不包含**的有效候选（即两张以上真卡）→ 它是列表/包装容器。
   // 这类元素**不允许吸收内层**，否则会把内层真卡并成一条、静默丢岗位（宁重复不遗漏）。
@@ -2241,12 +2243,48 @@ function jobUrlToken(rawUrl) {
     const url = new URL(String(rawUrl || ''), location.href);
     const match = url.pathname.match(/\/job_detail\/([^/?#]+)/i);
     if (match?.[1]) return match[1].replace(/\.html$/i, '');
+    // 猎聘：新版 `/job/1984773863.shtml` 与 SEO 模板 `/a/80379415.shtml`
+    // （列表级平台的 allowKeys / 岗位号口径必须认这两种形态，见 platform-adapters.jobIdFromUrl）
+    const lp = url.pathname.match(/\/job\/([^/?#.]+)(?:\.s?html)?$/i)
+      || url.pathname.match(/\/a\/(\d+)(?:\.s?html)?$/i);
+    if (lp?.[1]) return lp[1];
     for (const key of ['jobId', 'jobid', 'encryptJobId', 'securityId', 'lid']) {
       const value = url.searchParams.get(key);
       if (value) return `${key.toLowerCase()}=${value}`;
     }
     return '';
   } catch { return ''; }
+}
+
+/**
+ * 卡片容器上的 tlog 埋点岗位号。
+ * 猎聘新版列表（search-jobs-v2）卡无详情锚点，只在内层卡片容器上挂
+ * `data-tlg-ext` / `data-tlg-scm`；不同模板下 collectCards 归一到的容器可能是
+ * 外层 `div.job-list-item`，所以「自身 → 内部后代」都看一遍。取不到返回 ''。
+ */
+function cardTlogJobId(card) {
+  try {
+    const hasAttr = (el) => Boolean(el?.getAttribute?.('data-tlg-ext') || el?.getAttribute?.('data-tlg-scm'));
+    const el = hasAttr(card) ? card : card?.querySelector?.('[data-tlg-ext], [data-tlg-scm]');
+    if (!el) return '';
+    return ADAPTERS.jobIdFromTlogAttrs(el.getAttribute('data-tlg-ext'))
+      || ADAPTERS.jobIdFromTlogAttrs(el.getAttribute('data-tlg-scm'));
+  } catch { return ''; }
+}
+
+/**
+ * 卡片 → 岗位号（扫描 scanList 与详情 extractJobFromCardOnly 的**唯一口径**）。
+ * 两阶段口径必须一致，否则「已扫描」索引 / 队列去重的键与入库生成的 jobId 错位，同一岗位反复入库。
+ *
+ * 顺序：详情锚点 URL → 卡片 tlog 埋点 → URL 兜底 token。
+ * 猎聘新版列表卡（search-jobs-v2）没有 `<a>` 详情锚点，但容器上挂了 tlog 埋点
+ * `data-tlg-ext` / `data-tlg-scm`，里面带真实 jobId（见 adapters.jobIdFromTlogAttrs）。
+ */
+function cardJobId(card, identity) {
+  const href = String(identity?.href || '');
+  const direct = ADAPTERS.jobIdFromUrl(href) || cardTlogJobId(card);
+  if (direct) return direct;
+  return href ? jobUrlToken(href) : '';
 }
 
 // 详情根节点（对齐 job-claw-main detailRoot / detailReady）
@@ -2561,7 +2599,8 @@ async function scanList(opts = {}) {
       try { fields = cardFields(card) || fields; } catch {}
       records.set(key, {
         key,
-        jobId: jobUrlToken(identity.href) || '',
+        // 统一口径 + 稳定哈希兜底：无锚点也无埋点的卡（哈希身份）也必须有 jobId，否则去重全失效
+        jobId: cardJobId(card, identity) || stableFallbackJobId(fields, identity),
         title: String(identity.title || '').slice(0, 80),
         company: String(identity.company || '').slice(0, 60),
         salary: String(fields.salary || '').slice(0, 30),
@@ -3114,11 +3153,17 @@ function stableFallbackJobId(fields, identity) {
 function extractJobFromCardOnly(card) {
   const identity = cardIdentity(card);
   const fields = cardFields(card);
-  const url = String(identity.href || '');
-  // jobId 统一走适配表唯一权威（猎聘 /job/xxx.shtml 与 SEO /a/xxx.shtml 都能取到并去后缀）
-  let jobId = ADAPTERS.jobIdFromUrl(url);
+  let url = String(identity.href || '');
+  // jobId 与扫描阶段同口径（cardJobId）：锚点 URL → 卡片 tlog 埋点 → URL 兜底 token。
+  // 猎聘 /job/xxx.shtml 与 SEO /a/xxx.shtml 都能取到并去后缀；新版无锚点卡从埋点里取真实 jobId。
+  let jobId = cardJobId(card, identity);
   // 无真实 URL 也无平台 jobId（仅智联新增会出现）→ 用稳定哈希兜底，保证入库去重不失效
   if (!jobId && !url) jobId = stableFallbackJobId(fields, identity);
+  // 有岗位号但无锚点（猎聘新版卡）→ 按平台模板补详情页 URL，供入库链接与「详情补齐 JD」使用
+  if (!url && jobId) {
+    const buildDetailUrl = ADAPTERS.PLATFORM_DETAIL_URL_FROM_ID[PLATFORM];
+    if (buildDetailUrl) url = buildDetailUrl(jobId) || '';
+  }
   return {
     platform: PLATFORM,
     title: identity.title || '岗位',
@@ -3134,7 +3179,8 @@ function extractJobFromCardOnly(card) {
     // 列表级采集拿不到真实详情 URL 时（智联无 jobdetail 锚点变体且主进程注解未命中），
     // 落空字符串、不回退搜索页 URL：搜索页 URL 会让同批不同岗位折叠成同一链接
     // （入库 dedupe 抽稀 + 队列链接指向错误页面，即「队列卡片的链接不是单个岗位详情」）。
-    // 锚点型平台（猎聘/51job）anchor 恒有值，不受影响。
+    // 注意：猎聘新版列表卡也没有锚点，但上方已用「埋点 jobId + 平台详情页模板」补出
+    // 单个岗位的 /job/<id>.shtml，不属于「回退搜索页」，不受此限制。
     url: url || '',
     jobId,
     labels: [],
@@ -3326,7 +3372,35 @@ async function visualCollectListOnly(opts = {}) {
   const processed = new Set();
   let processedCount = 0;
   let emptyRounds = 0;
+
+  // 详情阶段白名单（列表页两级筛选的第三段）：只有通过「确定性预筛 + AI 标题筛选」的卡片
+  // 才提取 / 补齐详情。口径与 BOSS inline 分支完全一致（collectCardKey + jobUrlToken token 兜底）。
+  const allowKeys = Array.isArray(opts.allowKeys) ? opts.allowKeys.filter((k) => typeof k === 'string' && k) : null;
+  const allowSet = allowKeys && allowKeys.length ? new Set(allowKeys) : null;
+  const allowTokens = allowSet
+    ? new Set(allowKeys.map((k) => jobUrlToken(k)).filter(Boolean))
+    : null;
+  const allowedTotal = allowSet ? allowSet.size : 0;
+  let allowSkipped = 0;
+  let allowedDone = 0;
+  const cardAllowed = (key) => {
+    if (!allowSet) return true;
+    if (allowSet.has(key)) return true;
+    const token = jobUrlToken(key);
+    return Boolean(token) && allowTokens.has(token);
+  };
+
   resetJdFillState(); // 每轮采集重置 JD 补齐计数 / 熔断状态
+  if (allowSet) {
+    notify('collect-progress', { phase: 'allow-filter', index: 0, total: 0, processed: 0, maxJobs, allowedTotal, status: `仅采集通过筛选的 ${allowedTotal} 个岗位` });
+    // 扫描阶段把列表滚到了底部；白名单卡片可能分布在列表任意位置，必须从顶部重新走一遍。
+    try {
+      const sc = findListScroller();
+      if (sc) sc.scrollTop = 0;
+      else window.scrollTo(0, 0);
+    } catch {}
+    await sleep(settleMsNow());
+  }
   notify('collect-progress', { phase: 'start', index: 0, total: 0, maxJobs, platform: PLATFORM, status: `准备中（${PLATFORM} · 列表级采集）` });
 
   // 一次性 DOM 诊断（与 BOSS 同口径，选择器取自适配表）
@@ -3368,16 +3442,33 @@ async function visualCollectListOnly(opts = {}) {
     await waitWhilePaused();
     if (collectCtl.stopped) break;
     if (processedCount >= maxJobs) break;
+    // 白名单里的岗位已全部采完 → 不必再滚到底（虚拟列表越往后越不对口，少滚=少请求）
+    if (allowSet && allowedDone >= allowedTotal) break;
     let cards = [];
     try { cards = collectCards(); } catch (e) {
       notify('collect-progress', { phase: 'collect-error', index: 0, total: 0, processed: processedCount, maxJobs, status: `卡片查询异常：${String(e?.message || e).slice(0, 80)}` });
       await sleep(settleMsNow());
       continue;
     }
-    const pending = cards.filter((c) => {
-      const k = collectCardKey(c);
-      return Boolean(k) && !processed.has(k);
-    });
+    // 不在白名单 → 记入 processed（滚动加载更多用「是否有未处理卡」判断增长，漏记会把列表中间截断），
+    // 但不滚动 / 高亮 / 提取 / 补详情。
+    const pending = [];
+    let skippedNow = 0;
+    for (const c of cards) {
+      let k = '';
+      try { k = collectCardKey(c); } catch { k = ''; }
+      if (!k || processed.has(k)) continue;
+      if (!cardAllowed(k)) {
+        processed.add(k);
+        allowSkipped += 1;
+        skippedNow += 1;
+        continue;
+      }
+      pending.push(c);
+    }
+    if (skippedNow) {
+      notify('collect-progress', { phase: 'allow-skip', index: 0, total: cards.length, processed: processedCount, maxJobs, allowSkipped, status: `跳过未通过筛选的岗位 ${allowSkipped} 个` });
+    }
     if (pending.length === 0) {
       // 本屏已采完 → 按设置渐进下拉加载更多（复用 BOSS 同一套滚动判定）
       if (!autoScroll) {
@@ -3417,11 +3508,12 @@ async function visualCollectListOnly(opts = {}) {
     // 其它平台能力表未声明 → 直接返回 false）
     await enrichJobDetail(job);
     processedCount += 1;
+    allowedDone += 1;
     notify('collect-progress', { phase: 'done', index: processedCount, total: cards.length, processed: processedCount, maxJobs, title: job.title, company: job.company, status: '完成', job });
     await sleep(settleMsNow());
   }
   reportJdFillSummary();
-  notify('collect-done', { listUrl: location.href, processed: processedCount, total: processedCount, maxJobs });
+  notify('collect-done', { listUrl: location.href, processed: processedCount, total: processedCount, maxJobs, allowedTotal, allowSkipped });
 }
 
 

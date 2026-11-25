@@ -765,7 +765,7 @@ export function resetLLMUsageStats(): void {
 // 不再重复计费。任何输入变化（简历/画像/岗位描述/自定义提示词/模型/温度）都会自然产生新 key。
 // 缓存只存成功结果；失败与测试连接（ping）一律不缓存。
 
-export type AICacheScope = 'profile' | 'job-analysis' | 'title-screen' | 'greetings' | 'assistant' | 'mock-interview';
+export type AICacheScope = 'profile' | 'job-analysis' | 'title-screen' | 'greetings' | 'assistant' | 'mock-interview' | 'trend-insight';
 
 export interface AICacheMeta {
   /** 缓存作用域：画像 / 岗位分析 / 打招呼语 / 求职助手（用于分类管理与清空） */
@@ -807,6 +807,8 @@ const AI_CACHE_DEFAULT_TTL: Record<AICacheScope, number> = {  // 画像 / 打招
   assistant: 7 * 24 * 3600 * 1000,
   // 模拟面试：每问都依赖前文，缓存永远不会命中，**实际不启用**；这里仅为类型齐备
   'mock-interview': 0,
+  // 招聘趋势解读：key 含筛选条件 + 聚合数据指纹 + 技能正文，数据不变不重复计费
+  'trend-insight': 24 * 3600 * 1000,
 };
 
 /** 缓存作用域 → 中文用途标签（作为 callModel 的 purpose，用于调用日志与缓存命中统计展示） */
@@ -817,6 +819,7 @@ const AI_SCOPE_LABELS: Record<AICacheScope, string> = {
   'title-screen': '列表标题预筛',
   assistant: '定制简历 / 求职助手',
   'mock-interview': '模拟面试',
+  'trend-insight': '招聘趋势解读',
 };
 
 // djb2 双哈希（碰撞概率足够低），渲染进程无 node crypto，用稳定字符串哈希

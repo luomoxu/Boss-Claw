@@ -7372,3 +7372,174 @@ html[data-theme='dark'] .skill-chip-gap:hover {
 .mi-clone-item__name { font-size: 13px; font-weight: 600; }
 .mi-clone-item__meta { font-size: 11px; color: var(--fg-subtle); margin-top: 1px; }
 
+
+/* ===== 数据统计 · 招聘趋势 Tab ===== */
+.stats-tabs { margin-bottom: 4px; }
+.stats-tabs .ant-tabs-nav { margin-bottom: 16px; }
+
+.trend-page { display: flex; flex-direction: column; gap: 20px; }
+.trend-page > .ant-card { margin-bottom: 0; }
+.trend-page .stats-row { margin-bottom: 0; }
+
+.trend-filter-card .ant-card-body { padding: 10px 14px; }
+.trend-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.trend-filter-meta {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--fg-subtle);
+  font-variant-numeric: tabular-nums;
+}
+
+.trend-summary-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 0; }
+
+.trend-chart-box { width: 100%; min-height: 220px; }
+.trend-tip { padding: 8px 10px; line-height: 1.7; }
+.trend-tip-title { font-weight: 600; margin-bottom: 2px; }
+
+.trend-insight-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+.trend-insight-card {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--fg-subtle);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  padding: 10px 12px;
+}
+.trend-insight-card--info { border-left-color: var(--brand); }
+.trend-insight-card--good { border-left-color: var(--status-success); }
+.trend-insight-card--warn { border-left-color: var(--status-warning); }
+.trend-insight-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  margin-bottom: 4px;
+}
+.trend-insight-body { font-size: 12.5px; line-height: 1.7; color: var(--fg-muted); }
+
+.trend-rank-list { display: flex; flex-direction: column; gap: 10px; }
+.trend-rank-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12.5px;
+}
+.trend-rank-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+}
+.trend-rank-value {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}
+.trend-rank-value em {
+  margin-left: 6px;
+  font-style: normal;
+  color: var(--fg-subtle);
+  font-size: 11px;
+}
+.trend-rank-bar {
+  height: 5px;
+  margin-top: 4px;
+  border-radius: 999px;
+  background: var(--hover-bg);
+  overflow: hidden;
+}
+.trend-rank-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--brand);
+  opacity: 0.75;
+}
+.trend-rank-sub { font-size: 11px; color: var(--fg-subtle); margin-top: 2px; }
+
+.trend-funnel { display: flex; flex-direction: column; gap: 9px; margin-bottom: 10px; }
+.trend-funnel-row {
+  display: grid;
+  grid-template-columns: 130px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  font-size: 12.5px;
+}
+.trend-funnel-label { color: var(--fg-muted); white-space: nowrap; }
+.trend-funnel-track {
+  height: 14px;
+  border-radius: 5px;
+  background: var(--hover-bg);
+  overflow: hidden;
+}
+.trend-funnel-fill {
+  display: block;
+  height: 100%;
+  border-radius: 5px;
+  background: var(--brand);
+  opacity: 0.72;
+  transition: width 0.35s ease;
+}
+.trend-funnel-value {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 110px;
+  justify-content: flex-end;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+}
+.trend-funnel-value em { font-style: normal; font-size: 11px; color: var(--fg-subtle); }
+.trend-funnel-loss { font-size: 11px; font-weight: 500; color: var(--status-warning); }
+
+.trend-hot-list { display: flex; flex-direction: column; gap: 8px; }
+.trend-hot-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed var(--border);
+}
+.trend-hot-row:last-child { border-bottom: 0; padding-bottom: 0; }
+.trend-hot-main { min-width: 0; display: flex; flex-direction: column; }
+.trend-hot-title {
+  font-size: 12.5px;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.trend-hot-company {
+  font-size: 11px;
+  color: var(--fg-subtle);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trend-ai-text p { margin: 0 0 8px; font-size: 13px; line-height: 1.75; color: var(--fg); }
+.trend-ai-text p:last-of-type { margin-bottom: 10px; }
+
+@media (max-width: 1180px) {
+  .trend-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 760px) {
+  .trend-summary-grid { grid-template-columns: minmax(0, 1fr); }
+  .trend-funnel-row { grid-template-columns: 100px minmax(0, 1fr) auto; }
+  .trend-filter-meta { margin-left: 0; width: 100%; }
+}

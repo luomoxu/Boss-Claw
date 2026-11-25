@@ -110,6 +110,15 @@ export const BOSS_SKILLS: BossSkill[] = [
     instructions:
       '只给档位不给分数：每维输出 { reasoning, level:1–4, pos:1–3, evidence }，reasoning 必须写在 level 之前；不输出 0–100、总分或录用档位。四档：4 强（有事实有数量且口径清楚）/ 3 扎实（有事实数量，归属或口径之一模糊）/ 2 部分（有做法缺数量或结果）/ 1 不足（只有概括名词）。每维必须逐字引用候选人回答原句作 evidence（10–60 字，不得改写或编造），系统会做子串校验，对不上会把该维压到 69 以下。回答长不等于答得好，冗余重复在相关性上扣分。未作答或该维不适用标 na（不按 0 分），但不得为省事整题全标 na。不评价人格/情绪/诚实/健康/外貌，不预测录用概率。改写回答只能用原答与简历里的真实事实与数字，需要新数字的地方写入 gaps。',
   },
+  {
+    id: 'trend-insight',
+    name: '招聘趋势解读',
+    description: '把本地采集趋势转化为可执行求职策略：先读数据再下结论，只引用给出的指标，区分信号与噪声',
+    scope: 'trend-insight',
+    defaultEnabled: true,
+    instructions:
+      '你是求职市场分析助手。输入是本地采集事件库的聚合结果（供给趋势、薪资分位、方向/职级分布、筛选漏斗）与候选人画像。只输出 3–5 条结论，每条 1–2 句，必须先引用一个具体指标（如「近 30 天新发现 X 个岗位，较上一周期 +Y%」），再给行动建议。必须遵守：①数据不足（样本 < 20 或覆盖天数 < 7）时明确说「样本不足，暂不判断」，不要硬下结论；②区分「采集覆盖变化」与「市场变化」——采集频率/关键词/tab 改动会让曲线失真，遇到异常波动先提示覆盖因素；③不做薪资谈判承诺、不预测录用概率；④不编造输入里没有的数字、公司或趋势；⑤漏斗结论指出「哪一步流失最大、可调整什么筛选条件」，而不是泛泛而谈。语言简洁、可执行，避免「建议多关注市场动态」这类空话。',
+  },
 ];
 
 // ===== 磁盘加载（skills/*/SKILL.md，经主进程 IPC） =====
@@ -158,7 +167,7 @@ export async function ensureSkillsLoaded(): Promise<void> {
             id: String(s.id || ''),
             name: String(s.name || s.id || ''),
             description: String(s.description || ''),
-            scope: (['profile', 'job-analysis', 'title-screen', 'greetings', 'assistant', 'mock-interview'].includes(s.scope) ? s.scope : 'assistant') as SkillScope,
+            scope: (['profile', 'job-analysis', 'title-screen', 'greetings', 'assistant', 'mock-interview', 'trend-insight'].includes(s.scope) ? s.scope : 'assistant') as SkillScope,
             defaultEnabled: s.defaultEnabled !== false,
             custom: Boolean(s.custom),
             removable: s.removable === undefined ? Boolean(s.custom) : Boolean(s.removable),

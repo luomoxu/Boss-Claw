@@ -100,8 +100,14 @@ function emptyCounts(): Record<PrefilterReason, number> {
 export function listCardJobId(card: ListCardRecord): string {
   const direct = String(card.jobId || '').trim();
   if (direct) return direct;
-  // 兜底：从卡片 key（通常是详情 URL）里取 /job_detail/{id}
-  const m = String(card.key || '').match(/job_detail\/([^/?#.]+)/i);
+  // 兜底：从卡片 key（通常是详情 URL）里取岗位号。口径与 preload 的 jobIdFromUrl 对齐：
+  //   BOSS `/job_detail/{id}`、智联 `/jobdetail/{id}`、猎聘 `/job/{id}.shtml` 与 `/a/{id}.shtml`。
+  const key = String(card.key || '');
+  const m = key.match(/job_detail\/([^/?#.]+)/i)
+    || key.match(/jobdetail\/([^/?#]+)/i)
+    || key.match(/\/job\/([^/?#.]+?)(?:\.s?html)?(?:[?#]|$)/i)
+    || key.match(/\/a\/(\d+)/i)
+    || key.match(/jobId=(\d+)/i);
   return m?.[1] ? String(m[1]) : '';
 }
 

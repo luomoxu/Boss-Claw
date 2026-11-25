@@ -27,8 +27,8 @@
 //   - 交叉视图（按平台 / 按方向 CrossTable）
 //   - 公司 Top / 城市 Top / 任务概览 / 状态汇总
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Button, Card, Dropdown, Progress, Segmented, Space, Tag, Tooltip, Typography, message } from 'antd';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
+import { Button, Card, Dropdown, Progress, Segmented, Space, Tabs, Tag, Tooltip, Typography, message } from 'antd';
 import {
   AimOutlined,
   AlertOutlined,
@@ -72,6 +72,8 @@ import { buildDetailRows, buildSummaryRows, exportFilename, toCsv, type ExportKi
 import { buildStatsReportHtml } from '@/lib/bossclaw/statsReport';
 import { STATUS_COLORS } from '@/theme';
 import { revealFile, saveCsvFile, saveReportPdf, type ExportOutcome } from '@/lib/bossclaw/statsExportRun';
+// 招聘趋势依赖 recharts（体积较大），按 Tab 懒加载，避免拖慢默认的投递统计视图
+const StatsTrend = lazy(() => import('./StatsTrend'));
 
 const { Text } = Typography;
 
@@ -300,6 +302,7 @@ export default function Stats() {
   const config = useSettingsStore((s) => s.config);
   const setRoute = useAppStore((s) => s.setRoute);
 
+  const [tab, setTab] = useState<'delivery' | 'trend'>('delivery');
   const [range, setRange] = useState<StatsRangeKey>('7d');
   const [crossBy, setCrossBy] = useState<'platform' | 'direction'>('platform');
   const [exporting, setExporting] = useState<ExportKind | null>(null);
@@ -414,31 +417,48 @@ export default function Stats() {
             <BarChartOutlined className="page-title-icon" />数据统计
           </h1>
           <p className="page-sub">
-            基于本地任务与岗位记录实时聚合，无需联网。岗位指标按「加入时间」落在所选范围内统计；
-            趋势「已投递」按投递成功时间归桶。每次导出都会弹出系统保存对话框，由你选择保存位置。
+            {tab === 'delivery'
+              ? '基于本地任务与岗位记录实时聚合，无需联网。岗位指标按「加入时间」落在所选范围内统计；趋势「已投递」按投递成功时间归桶。每次导出都会弹出系统保存对话框，由你选择保存位置。'
+              : '基于本地采集事件库（BOSS / 猎聘自动采集）统计市场供给、薪资分位与筛选漏斗；默认 90 天、日粒度，缺失采集的日期留空。'}
           </p>
         </div>
-        <div className="page-head-extra stats-head-extra">
-          <Segmented
-            value={range}
-            onChange={(v) => setRange(v as StatsRangeKey)}
-            options={STATS_RANGES.map((r) => ({ label: r.label, value: r.key }))}
-          />
-          <Dropdown
-            menu={exportMenu}
-            trigger={['click']}
-            placement="bottomRight"
-            open={exportOpen}
-            onOpenChange={setExportOpen}
-          >
-            <Button type="primary" icon={<DownloadOutlined />} loading={Boolean(exporting)}>
-              导出 <ChevronDown open={exportOpen} size={11} style={{ marginLeft: 4 }} />
-            </Button>
-          </Dropdown>
-        </div>
+        {tab === 'delivery' && (
+          <div className="page-head-extra stats-head-extra">
+            <Segmented
+              value={range}
+              onChange={(v) => setRange(v as StatsRangeKey)}
+              options={STATS_RANGES.map((r) => ({ label: r.label, value: r.key }))}
+            />
+            <Dropdown
+              menu={exportMenu}
+              trigger={['click']}
+              placement="bottomRight"
+              open={exportOpen}
+              onOpenChange={setExportOpen}
+            >
+              <Button type="primary" icon={<DownloadOutlined />} loading={Boolean(exporting)}>
+                导出 <ChevronDown open={exportOpen} size={11} style={{ marginLeft: 4 }} />
+              </Button>
+            </Dropdown>
+          </div>
+        )}
       </div>
 
-      {empty ? (
+      <Tabs
+        className="stats-tabs"
+        activeKey={tab}
+        onChange={(k) => setTab(k as 'delivery' | 'trend')}
+        items={[
+          { key: 'delivery', label: '投递统计' },
+          { key: 'trend', label: '招聘趋势' },
+        ]}
+      />
+
+      {tab === 'trend' ? (
+        <Suspense fallback={<Card loading />}>
+          <StatsTrend />
+        </Suspense>
+      ) : empty ? (
         <Card>
           <div className="stats-empty">
             <div className="stats-empty-icon"><BarChartOutlined /></div>

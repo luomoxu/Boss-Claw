@@ -102,6 +102,7 @@ import { CHINA_PROVINCES } from '@/lib/bossclaw/locationFilter';
 import { writeTargetLocations } from '@/lib/bossclaw/targetLocationSync';
 import { cleanSalary } from '@/lib/bossclaw/jobDisplay';
 import { clearSeenJobs, seenJobsStats } from '@/lib/bossclaw/seenJobs';
+import { clearCollectEvents, collectEventsUsage, type CollectEventUsage } from '@/lib/bossclaw/collectEvents';
 import { camoufoxStatus, camoufoxLogin, camoufoxLogout, camoufoxStop, CAMOUFOX_MAX_PAGES, CAMOUFOX_PAGE_SIZE, type CamoufoxStatus } from '@/lib/bossclaw/camoufox';
 import {
   PLATFORM_META, PLATFORM_IDS, platformEnabled, platformPriority,
@@ -160,6 +161,7 @@ const SKILL_SCOPE_OPTIONS = [
   { label: '职业画像（profile）', value: 'profile' },
   { label: '岗位匹配评估（job-analysis）', value: 'job-analysis' },
   { label: '列表标题预筛（title-screen）', value: 'title-screen' },
+  { label: '招聘趋势解读（trend-insight）', value: 'trend-insight' },
   { label: '打招呼语（greetings）', value: 'greetings' },
   { label: '岗位定制简历（assistant）', value: 'assistant' },
   { label: '模拟面试（mock-interview）', value: 'mock-interview' },
@@ -213,7 +215,8 @@ function PlatformCollectOverrideEditor({
   setConfig: (patch: Partial<AppConfig>) => void;
 }) {
   const ov = platformCollectOverrides(config, platform);
-  const isBoss = platform === 'boss';
+  // 「推荐 tab + 列表页两级筛选」目前由 BOSS / 猎聘的页面结构支持
+  const supportsRecommendTabs = platform === 'boss' || platform === 'liepin';
   const overrideCount = PLATFORM_OVERRIDE_FIELDS.filter((k) => ov[k] !== undefined).length;
 
   const boolField = (key: BoolOverrideKey, label: string) => {
@@ -286,10 +289,10 @@ function PlatformCollectOverrideEditor({
               {numField('collectSpeedMs', '采集节奏 (ms)', '越大越慢，越接近人工', 400)}
               {numField('collectPageTimeoutMs', '页面加载上限 (ms)', '搜索页等待就绪的最长时间', 5000)}
               {numField('listScanMax', '单列表扫描上限', '单次列表最多扫描的卡片数', 20)}
-              {isBoss && numField('recommendTabMax', '推荐 tab 上限', '0 = 采全部推荐 tab')}
-              {isBoss && numField('recommendTabSwitchMs', '推荐 tab 切换间隔 (ms)', '连续切换之间的等待', 1000)}
-              {isBoss && boolField('titleScreenEnabled', '列表标题 AI 预筛')}
-              {isBoss && numField('titleScreenBatchSize', '标题预筛批量', '单次送给 AI 的标题数', 10, 120)}
+              {supportsRecommendTabs && numField('recommendTabMax', '推荐 tab 上限', '0 = 采全部推荐 tab')}
+              {supportsRecommendTabs && numField('recommendTabSwitchMs', '推荐 tab 切换间隔 (ms)', '连续切换之间的等待', 1000)}
+              {supportsRecommendTabs && boolField('titleScreenEnabled', '列表标题 AI 预筛')}
+              {supportsRecommendTabs && numField('titleScreenBatchSize', '标题预筛批量', '单次送给 AI 的标题数', 10, 120)}
               {boolField('skipContactedJobs', '跳过已沟通岗位')}
               {numField('seenJobsTtlDays', '已扫描索引有效期 (天)', '0 = 不失效')}
               {numField('maxJobsPerRun', '单次采集上限', '防失控兜底', 1)}
@@ -336,6 +339,9 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
   const [aiCacheStats, setAiCacheStats] = useState<ReturnType<typeof getAICacheStats> | null>(null);
   // 「已扫描」索引统计（列表页预筛用它跳过已评估岗位；清空后立即刷新显示）
   const [seenStats, setSeenStats] = useState(() => seenJobsStats());
+  const [eventUsage, setEventUsage] = useState<CollectEventUsage | null>(null);
+  const refreshEventUsage = () => { void collectEventsUsage().then(setEventUsage); };
+  useEffect(() => { refreshEventUsage(); }, []);
   const [llmUsage, setLlmUsage] = useState<ReturnType<typeof getLLMUsageStats> | null>(null);
   // AI 技能（skills 层）启用状态：初始用内置定义，加载 SKILL.md 后刷新
   const [skills, setSkills] = useState(() => allSkillsWithState());
@@ -1835,7 +1841,7 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
                   style={{ width: '100%' }}
                 />
               </div>
-              {/* ===== BOSS 推荐 tab 采集 + 列表页两级筛选（仅无关键字采集生效）===== */}
+              {/* ===== 推荐 tab 采集 + 列表页两级筛选（BOSS / 猎聘，仅无关键字采集生效）===== */}
               <div className="sg-item">
                 <span className="field-label">推荐 tab 采集：单次 tab 上限（0 = 全部）</span>
                 <InputNumber
@@ -1924,6 +1930,31 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
                   >
                     <Button size="small" danger icon={<DeleteOutlined />}>
                       清空记录
+                    </Button>
+                  </Popconfirm>
+                </div>
+              </div>
+              <div className="sg-item">
+                <span className="field-label">
+                  招聘趋势事件库：
+                  {eventUsage
+                    ? `${eventUsage.count} 条 / ${(eventUsage.bytes / 1024).toFixed(0)} KB · 保留 ${eventUsage.retentionDays} 天`
+                    : '不可用（仅桌面版记录）'}
+                </span>
+                <div>
+                  <Popconfirm
+                    title="清空招聘趋势事件库？"
+                    description="会删除全部采集事件（含已筛掉的岗位），趋势页将从头开始积累；不影响岗位队列与已扫描索引。"
+                    okText="清空"
+                    cancelText="取消"
+                    onConfirm={async () => {
+                      const ok = await clearCollectEvents();
+                      refreshEventUsage();
+                      message[ok ? 'success' : 'error'](ok ? '已清空招聘趋势事件库' : '清空失败');
+                    }}
+                  >
+                    <Button size="small" danger icon={<DeleteOutlined />} disabled={!eventUsage?.count}>
+                      清空事件库
                     </Button>
                   </Popconfirm>
                 </div>

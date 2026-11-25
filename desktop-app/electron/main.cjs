@@ -20,6 +20,10 @@ const mockInterviewRepo = require('./mockInterviewRepo.cjs');
 const mockInterviewBankRepo = require('./mockInterviewBankRepo.cjs');
 // 岗位队列文件仓储（issue #10：把 pending / qualifiedExports 从 localStorage 迁到 <userData>/queue/）
 const queueStore = require('./queueStore.cjs');
+// 采集事件仓储（招聘趋势分析）：<userData>/collect-events/YYYY-MM.jsonl，按月分片、保留 365 天
+const collectEventStore = require('./collectEventStore.cjs').createCollectEventStore({
+  baseDir: () => app.getPath('userData'),
+});
 // 语音运行时（utilityProcess 宿主 + 模型安装）；仅在模拟面试朗读时懒加载，不影响启动
 const speechInstall = require('./speechInstall.cjs');
 const speechService = require('./speechService.cjs');
@@ -138,7 +142,7 @@ function safeOn(channel, handler) {
 const SKILLS_DIR = path.join(app.getAppPath(), 'skills');
 const CUSTOM_SKILLS_DIR = () => path.join(app.getPath('userData'), 'skills');
 const SKILL_ID_RE = /^[a-z0-9-]+$/;
-const SKILL_SCOPES = ['profile', 'job-analysis', 'title-screen', 'greetings', 'assistant', 'mock-interview'];
+const SKILL_SCOPES = ['profile', 'job-analysis', 'title-screen', 'greetings', 'assistant', 'mock-interview', 'trend-insight'];
 
 // 出厂内置技能（随安装包分发、只读，不提供删除；用户可用开关停用）。
 // 其余技能（设置页导入 / 新建 → userData/skills，或用户自行放进 skills/ 目录）都视为
@@ -154,6 +158,7 @@ const SHIPPED_SKILL_IDS = new Set([
   'job-match',
   'mock-interview-question',
   'mock-interview-report',
+  'trend-insight',
 ]);
 
 // 只读目录（安装包 asar / Program Files）里删不掉时，把 id 记入屏蔽名单：
@@ -2273,6 +2278,39 @@ safeHandle('jc:queue-clear', async () => {
 safeHandle('jc:queue-usage', async () => {
   try {
     return queueStore.usage();
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+// ===== 采集事件库：招聘趋势分析的本地事实源（BOSS / 猎聘自动采集） =====
+safeHandle('jc:collect-events-load', async (_event, opts) => {
+  try {
+    return await collectEventStore.load(opts || {});
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:collect-events-upsert', async (_event, events) => {
+  try {
+    return await collectEventStore.upsert(events);
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:collect-events-usage', async () => {
+  try {
+    return await collectEventStore.usage();
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+safeHandle('jc:collect-events-clear', async () => {
+  try {
+    return await collectEventStore.clear();
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
   }

@@ -43,6 +43,7 @@ const ALLOWED_IPC_CHANNELS = new Set([
   'jc:mock-interview-voice-rename', 'jc:mock-interview-voice-usage',
   'jc:qualified-jobs-dir-get', 'jc:qualified-jobs-dir-pick', 'jc:qualified-jobs-dir-set', 'jc:read-doc',
   'jc:queue-clear', 'jc:queue-load', 'jc:queue-save', 'jc:queue-usage',
+  'jc:collect-events-clear', 'jc:collect-events-load', 'jc:collect-events-upsert', 'jc:collect-events-usage',
   'jc:save-file', 'jc:save-pdf', 'jc:save-pdf-batch', 'jc:save-pdf-batch-cancel',
   'jc:save-pdf-batch-progress', 'jc:save-qualified-jobs', 'jc:save-report-pdf', 'jc:show-item',
   'jc:skills-delete', 'jc:skills-import', 'jc:skills-list', 'jc:skills-read',
@@ -222,6 +223,12 @@ const api = {
   queueSave: (text, seq, opts) => ipcRenderer.invoke('jc:queue-save', text, seq, opts),
   queueClear: () => ipcRenderer.invoke('jc:queue-clear'),
   queueUsage: () => ipcRenderer.invoke('jc:queue-usage'),
+
+  // ===== 采集事件库（招聘趋势分析）=====
+  collectEventsLoad: (opts) => ipcRenderer.invoke('jc:collect-events-load', opts),
+  collectEventsUpsert: (events) => ipcRenderer.invoke('jc:collect-events-upsert', events),
+  collectEventsUsage: () => ipcRenderer.invoke('jc:collect-events-usage'),
+  collectEventsClear: () => ipcRenderer.invoke('jc:collect-events-clear'),
 
   // 保存定制简历 PDF：渲染进程传 A4 打印 HTML，主进程 printToPDF 后弹出保存对话框写盘
   savePdf: (defaultName, html) => ipcRenderer.invoke('jc:save-pdf', defaultName, html),

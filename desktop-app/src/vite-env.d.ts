@@ -108,6 +108,11 @@ interface ElectronBridgeApi {
   queueSave?: (text: string, seq: number, opts?: { migrationSnapshot?: boolean }) => Promise<{ ok: boolean; stale?: boolean; seq?: number; bytes?: number; at?: number; error?: string }>;
   queueClear?: () => Promise<{ ok: boolean; error?: string }>;
   queueUsage?: () => Promise<{ ok: boolean; bytes?: number; bakBytes?: number; totalBytes?: number; error?: string }>;
+  // 采集事件库（招聘趋势分析）：<userData>/collect-events/YYYY-MM.jsonl，按月分片、保留 365 天
+  collectEventsLoad?: (opts?: { from?: number; to?: number }) => Promise<{ ok: boolean; events?: unknown[]; error?: string }>;
+  collectEventsUpsert?: (events: unknown[]) => Promise<{ ok: boolean; count?: number; error?: string }>;
+  collectEventsUsage?: () => Promise<{ ok: boolean; count?: number; bytes?: number; months?: number; oldest?: number; newest?: number; retentionDays?: number; error?: string }>;
+  collectEventsClear?: () => Promise<{ ok: boolean; error?: string }>;
   // 模拟面试：会话文件存于 <userData>/mock-interview/（主进程持有，不进 localStorage）
   mockInterviewList?: () => Promise<{ ok: boolean; sessions?: unknown[]; error?: string }>;
   mockInterviewRead?: (id: string) => Promise<{ ok: boolean; session?: unknown; error?: string }>;

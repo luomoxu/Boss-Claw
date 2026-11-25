@@ -169,6 +169,13 @@ const PLATFORM_FIELD_SELECTORS = Object.freeze({
     title: [
       '[class*="jobTitleBox"]',
       '[class*="job-title"]',
+      // 2026-11 新版列表（search-jobs-v2）：标题是 span.search-job-card-name-text（title=岗位名），
+      // 卡片本身已无详情锚点，类名为连字符语义名（非哈希）——可稳定命中。
+      // 先取 -name-text 叶子节点：父容器 `search-job-card-name` 里还并列「急聘 / 校招网申」角标，
+      // innerText 会把它们粘进标题（「Java开发急聘」）。父容器只作灰度兜底。
+      '[class*="search-job-card-name-text"]',
+      '[class*="search-job-card-name"]',
+      '[class*="job-card-name"]',
       '[data-nick="job-detail-job-info"] [title]', // 标题 div 带 title="岗位名"
       '[class*="ellipsis-1"]',
       'h3', '.job-name',
@@ -196,6 +203,9 @@ const PLATFORM_FIELD_SELECTORS = Object.freeze({
       '[class*="job-dq"]',
       '[class*="dq"]',
       '[class*="area"]',
+      // 2026-11 新版列表：span.search-job-card-location
+      '[class*="search-job-card-location"]',
+      '[class*="job-location"]',
     ],
     recruiterTitle: [
       '[class*="recruiterName"]',
@@ -318,6 +328,40 @@ function jobIdFromUrl(raw) {
     || s.match(/\/a\/(\d+)/i);
   if (!m) return '';
   return String(m[1]).replace(/\.html?$/i, '').trim();
+}
+
+/**
+ * 从页面埋点属性里取岗位号（纯函数；入参是属性字符串，可能被 URI 编码）。
+ *
+ * 为什么需要（2026-11 猎聘 search-jobs-v2 取证）：新版搜索/推荐列表卡**没有详情锚点**
+ * （标题是 `span.search-job-card-name-text`），卡片容器只挂 tlog 埋点：
+ *   `<div class="job-card-pc-container search-job-card"
+ *         data-tlg-ext='{"as_from":"…","jobId":"1984773863","jobKind":"…"}'
+ *         data-tlg-scm="cid=job_1984773863&ctype=job&traceId=…">`
+ * 不读它就只能用「标题+公司+薪资+地点」的稳定哈希当身份 —— 岗位改标题 / 调薪资后
+ * 去重失效，且拿不到 `/job/<id>.shtml` 详情页 → 列表级采集补不了 JD。
+ *
+ * @param {string} raw `data-tlg-ext` 或 `data-tlg-scm` 的属性值
+ * @returns {string} 纯数字岗位号；取不到返回 ''
+ */
+function jobIdFromTlogAttrs(raw) {
+  const s = String(raw == null ? '' : raw).trim();
+  if (!s) return '';
+  let decoded = s;
+  try { decoded = decodeURIComponent(s); } catch { decoded = s; }
+  // ① 结构化：`{"…","jobId":"1984773863",…}`（ext 的主形态）
+  const jsonText = decoded.trim().startsWith('{') ? decoded : (s.trim().startsWith('{') ? s : '');
+  if (jsonText) {
+    try {
+      const obj = JSON.parse(jsonText);
+      const id = obj && (obj.jobId != null ? obj.jobId : obj.jobid);
+      if (id != null && /^\d{4,}$/.test(String(id))) return String(id);
+    } catch { /* 继续走文本匹配 */ }
+  }
+  // ② 文本形态：`jobId":"1984773863` / `jobId=1984773863` / `cid=job_1984773863`
+  const m = decoded.match(/job_?id["']?\s*[:=]\s*["']?(\d{4,})/i)
+    || decoded.match(/cid=[A-Za-z]*_(\d{4,})/);
+  return m?.[1] || '';
 }
 
 /** 登录墙 URL 形态（命中即视为登录页） */
@@ -707,6 +751,15 @@ const PLATFORM_DETAIL_API_FILL = Object.freeze({
   liepin: true,
 });
 
+/**
+ * 岗位号 → 详情页 URL 的构建器（能力表；只有平台有**稳定模板**时才登记）。
+ * 用途：列表卡没有详情锚点、但拿到了真实岗位号时（猎聘新版卡，岗位号来自 tlog 埋点），
+ * 补出 `/job/<id>.shtml` 供入库链接与「详情补齐 JD」使用；未登记的平台返回 undefined → 保持空 URL。
+ */
+const PLATFORM_DETAIL_URL_FROM_ID = Object.freeze({
+  liepin: liepinJobDetailUrl,
+});
+
 /** 该平台是否为「列表页内联详情」形态（仅 BOSS） */
 function supportsInlineDetail(platform) {
   return PLATFORM_LINK_KIND[platform] === 'inline';
@@ -901,6 +954,7 @@ module.exports = {
   PLATFORM_APPLY_SPEC,
   ZHAOPIN_JOB_DETAIL_API,
   PLATFORM_DETAIL_API_FILL,
+  PLATFORM_DETAIL_URL_FROM_ID,
   zhaopinJobNumber,
   zhaopinJobDetailUrl,
   jdHtmlToText,
@@ -916,4 +970,5 @@ module.exports = {
   isListPage,
   isDetailPage,
   jobIdFromUrl,
+  jobIdFromTlogAttrs,
 };
