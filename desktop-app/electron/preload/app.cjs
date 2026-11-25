@@ -42,7 +42,7 @@ const ALLOWED_IPC_CHANNELS = new Set([
   'jc:mock-interview-voice-pack-preview', 'jc:mock-interview-voice-remove',
   'jc:mock-interview-voice-rename', 'jc:mock-interview-voice-usage',
   'jc:qualified-jobs-dir-get', 'jc:qualified-jobs-dir-pick', 'jc:qualified-jobs-dir-set', 'jc:read-doc',
-  'jc:queue-clear', 'jc:queue-load', 'jc:queue-save', 'jc:queue-usage',
+  'jc:queue-clear', 'jc:queue-load', 'jc:queue-save', 'jc:queue-save-patch', 'jc:queue-usage',
   'jc:collect-events-clear', 'jc:collect-events-load', 'jc:collect-events-upsert', 'jc:collect-events-usage',
   'jc:save-file', 'jc:save-pdf', 'jc:save-pdf-batch', 'jc:save-pdf-batch-cancel',
   'jc:save-pdf-batch-progress', 'jc:save-qualified-jobs', 'jc:save-report-pdf', 'jc:show-item',
@@ -51,7 +51,7 @@ const ALLOWED_IPC_CHANNELS = new Set([
   'jc:window-always-on-top', 'jc:window-always-on-top-changed', 'jc:window-always-on-top-set',
   'jc:window-close', 'jc:window-focus-changed', 'jc:window-is-maximized', 'jc:window-maximize',
   'jc:window-maximized-changed', 'jc:window-minimize',
-  'jc:notify', 'jc:tray-prefs-set',
+  'jc:notify', 'jc:notify-action', 'jc:tray-prefs-set',
 ]);
 
 const assertIpcChannel = (method, channel) => {
@@ -88,6 +88,13 @@ const api = {
   // 系统通知 / 托盘常驻（设置页开关；主进程按同一份偏好再拦截一次）
   notify: (payload) => ipcRenderer.invoke('jc:notify', payload || {}),
   setTrayPrefs: (prefs) => ipcRenderer.send('jc:tray-prefs-set', prefs || {}),
+  // 订阅「通知被点击后回传的动作」（如跳转跟聊页并高亮会话），返回取消订阅函数。
+  // 动作由主进程原样转发渲染层传入的 clickAction，解释权在渲染层（见 App.tsx）。
+  onNotifyAction: (callback) => {
+    const listener = (_event, action) => callback(action || {});
+    ipcRenderer.on('jc:notify-action', listener);
+    return () => ipcRenderer.removeListener('jc:notify-action', listener);
+  },
 
   // 窗口置顶（标题栏图钉按钮）：查询状态 / 设置 / 订阅变化
   winAlwaysOnTop: () => ipcRenderer.invoke('jc:window-always-on-top'),
@@ -216,11 +223,12 @@ const api = {
   backupRead: () => ipcRenderer.invoke('jc:backup-read'),
   backupDelete: () => ipcRenderer.invoke('jc:backup-delete'),
 
-  // ===== 岗位队列文件仓储（issue #10）=====
+  // ===== 岗位队列文件仓储（issue #10 / 存储迁移 P3）=====
   // load/save 走主进程 <userData>/queue/；save 交「已序列化字符串 + 单调 seq」，
-  // 主进程负责校验、轮转 .bak 与原子写。
+  // savePatch 只交通常变化条目（P3 per-item 写入）。
   queueLoad: () => ipcRenderer.invoke('jc:queue-load'),
   queueSave: (text, seq, opts) => ipcRenderer.invoke('jc:queue-save', text, seq, opts),
+  queueSavePatch: (text, seq) => ipcRenderer.invoke('jc:queue-save-patch', text, seq),
   queueClear: () => ipcRenderer.invoke('jc:queue-clear'),
   queueUsage: () => ipcRenderer.invoke('jc:queue-usage'),
 

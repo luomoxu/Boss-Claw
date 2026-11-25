@@ -36,6 +36,14 @@ const SUITES = [
   'select-popup-align-regression.mjs',
   // issue #15：模型服务商预设与「切换服务商」必须逐字段一致（否则表现为「选不了其他模型」）
   'settings-provider-regression.mjs',
+  // P1-4：HR 回复提醒 —— 会话聚合 / 两层开关 / 拒绝文案 / 点击回传接线
+  'notify-reply-regression.mjs',
+  // P1-5 A 层：企业工商字段解析（多排版 / 金额与日期归一 / 噪声黑名单 / 只提示不评级）
+  'company-biz-regression.mjs',
+  // P1-5 B/C 层：负面信号（中性词共现规则）+ AI 评级（无来源依据必须丢弃）
+  'company-due-diligence-regression.mjs',
+  // P1-6：求职进展（与 status 正交）—— 脏值归一 / 约面只前进 / 统计分布与漏斗面试数
+  'progress-stage-regression.mjs',
   'context-budget-regression.mjs',
   // issue #10：写失败必须可见（配额耗尽时数据静默不落盘 → 重启后进度回退）
   'persist-health-regression.mjs',
@@ -52,6 +60,9 @@ const SUITES = [
   'bank-recall-regression.mjs',
   'bank-repo-smoke.mjs',
   'llm-json-regression.mjs',
+  // issue #28：输出长度字段名（max_tokens / max_completion_tokens）与 temperature 的模型口径 ——
+  // gpt-5.x 起只认新字段，写死旧字段会让「测试连接」直接 400
+  'llm-params-regression.mjs',
   // 版本更新检查：版本比较用字符串会静默判错（2.10.0 < 2.9.0），必须断言
   'update-check-regression.mjs',
   'material-path-regression.mjs',

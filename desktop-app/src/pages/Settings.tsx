@@ -56,6 +56,7 @@ import {
   FileTextOutlined,
   HddOutlined,
   SyncOutlined,
+  CloudDownloadOutlined,
   DisconnectOutlined,
   InfoCircleOutlined,
   AudioOutlined,
@@ -66,6 +67,7 @@ import {
   ArrowUpOutlined,
   ArrowDownOutlined,
   SwapOutlined,
+  BellOutlined,
 } from '@ant-design/icons';
 import { useSettingsStore, PROVIDER_DEFAULTS } from '@/store/useSettingsStore';
 import { useAppStore, ThemeMode } from '@/store/useAppStore';
@@ -89,6 +91,7 @@ import SpeechSettingsCard from '@/components/SpeechSettingsCard';
 import StorageUsageCard from '@/components/StorageUsageCard';
 import { bridgeStatus } from '@/lib/bridgeClient';
 import { electronApi } from '@/lib/electronApi';
+import { checkForUpdates, openReleasesPage, type UpdateCheckResult } from '@/lib/bossclaw/updateCheck';
 import {
   getBackupDir,
   writeLocalBackup,
@@ -1027,6 +1030,10 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
   // ===== 开机自启动 & 本地备份目录 =====
   const [autostart, setAutostart] = useState<boolean | null>(null);
   const [backupDir, setBackupDir] = useState('');
+  // ===== 版本与更新 =====
+  const [appVersion, setAppVersion] = useState('');
+  const [updateChecking, setUpdateChecking] = useState(false);
+  const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(null);
   useEffect(() => {
     electronApi.autostart
       .get()
@@ -1037,7 +1044,26 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
       .get()
       .then(setQualifiedJobsDir)
       .catch(() => setQualifiedJobsDir(''));
+    // 版本号只用于展示，读不到不影响任何功能
+    electronApi.getAppInfo().then((info) => setAppVersion(String(info?.version || ''))).catch(() => {});
   }, []);
+
+  // 检查更新：force=true 才能绕开 6 小时缓存（用户主动点了按钮就该真去查）
+  const onCheckUpdate = useCallback(async () => {
+    setUpdateChecking(true);
+    try {
+      const r = await checkForUpdates(true);
+      setUpdateResult(r);
+      if (!r.ok) message.warning(r.error || '检查更新失败');
+      else if (r.hasUpdate) message.success(`发现新版本 v${r.latest}`);
+      else message.success(`已是最新版本（v${r.current}）`);
+    } catch (e: unknown) {
+      setUpdateResult({ ok: false, current: appVersion, error: e instanceof Error ? e.message : String(e) });
+      message.warning('检查更新失败');
+    } finally {
+      setUpdateChecking(false);
+    }
+  }, [appVersion]);
 
   const onToggleAutostart = async (v: boolean) => {
     try {
@@ -1167,6 +1193,78 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
             <Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0, fontSize: 13 }}>
               开启后，Windows 登录时将自动启动 BossClaw（打包安装版生效）。配合「定时任务」可在应用保持运行时按设定时刻自动投递 / 采集 / 备份。
             </Paragraph>
+          </div>
+
+          <div className="settings-section-card">
+            <div className="settings-section-header">
+              <div className="settings-section-header__title">
+                <div className="section-icon-box">
+                  <BellOutlined />
+                </div>
+                后台运行与通知
+              </div>
+            </div>
+            <div className="safety-grid">
+              <div className="sg-item">
+                <span className="field-label">关闭窗口时收进系统托盘</span>
+                <Switch
+                  checked={config.closeToTray !== false}
+                  onChange={(v) => setConfig({ closeToTray: v })}
+                />
+              </div>
+              <div className="sg-item">
+                <span className="field-label">关键事件发送系统通知</span>
+                <Switch
+                  checked={config.systemNotify !== false}
+                  onChange={(v) => setConfig({ systemNotify: v })}
+                />
+              </div>
+              <div className="sg-item">
+                <span className="field-label">HR 回复提醒</span>
+                <Switch
+                  checked={config.hrReplyNotify !== false}
+                  disabled={config.systemNotify === false}
+                  onChange={(v) => setConfig({ hrReplyNotify: v })}
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="settings-section-card">
+            <div className="settings-section-header">
+              <div className="settings-section-header__title">
+                <div className="section-icon-box">
+                  <CloudDownloadOutlined />
+                </div>
+                版本与更新
+              </div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+              <span className="field-label">当前版本 {appVersion || '读取中…'}</span>
+              <Space>
+                {updateResult?.ok && updateResult.hasUpdate ? (
+                  <Button type="primary" onClick={() => openReleasesPage(updateResult.url)}>
+                    前往下载 v{updateResult.latest}
+                  </Button>
+                ) : null}
+                <Button icon={<SyncOutlined />} loading={updateChecking} onClick={onCheckUpdate}>
+                  检查更新
+                </Button>
+              </Space>
+            </div>
+            {updateResult && !updateResult.ok ? (
+              <Alert
+                style={{ marginTop: 12 }}
+                type="warning"
+                showIcon
+                message={updateResult.error || '检查更新失败'}
+              />
+            ) : null}
+            {updateResult?.ok && !updateResult.hasUpdate ? (
+              <Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0, fontSize: 13 }}>
+                已是最新版本（v{updateResult.current}）。
+              </Paragraph>
+            ) : null}
           </div>
 
           <div className="settings-section-card">

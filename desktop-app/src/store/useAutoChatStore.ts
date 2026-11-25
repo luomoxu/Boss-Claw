@@ -26,9 +26,23 @@ import { generateReply } from '@/lib/bossclaw/greetings';
 import { rerankPending } from '@/lib/bossclaw/priority';
 import { platformEnabled, platformLabel, platformPriority, platformSupports } from '@/lib/bossclaw/platforms';
 import { claimDelivery, isDeliveryClaimed, releaseDelivery } from '@/lib/bossclaw/deliveryLock';
-import type { PendingItem, ImageResume, JobPlatform } from '@/lib/bossclaw/types';
+import { hrReplyConvKey, notifyHrReply } from '@/lib/notify';
+import { nextStageOnInterview } from '@/lib/bossclaw/progressStage';
+import type { PendingItem, ImageResume, JobPlatform, ProgressStage } from '@/lib/bossclaw/types';
 
 type ChatJobOutcome = 'success' | 'failed' | 'stop' | 'continue';
+
+/**
+ * 自动推进求职进展（P1-6）：只写 progressStage / progressUpdatedAt，绝不动 status。
+ * 读 store 里的**当前值**而不是调用方手里的快照 —— 跟聊期间用户可能已手动改成更靠后的阶段。
+ */
+function markProgress(id: string, stage: ProgressStage): void {
+  const { pending, updatePending } = useDataStore.getState();
+  const cur = pending.find((p) => p.id === id)?.progressStage;
+  const next = stage === 'rejected_by_hr' ? stage : nextStageOnInterview(cur);
+  if (!next || next === cur) return;
+  updatePending(id, { progressStage: next, progressUpdatedAt: Date.now() });
+}
 
 /** 从岗位元信息中提取纯 encryptJobId */
 function extractJobId(job: PendingItem['job']): string {
@@ -158,6 +172,16 @@ async function aiReplyAndSend(args: {
   const { addChatLog, addLog } = useRuntimeLogsStore.getState();
   const platform = String(item.job?.platform || 'boss');
   const hrPreview = hrMessage.slice(0, 200);
+  // 通知参数（P1-4）：聚合键按「HR 名 + 公司」，点击跳转按 HR 名（没有就用公司名，走同一套归一匹配）。
+  // 提醒只在「确认有一条 HR 新消息、且能落到会话上」时发；通知本身不参与任何业务判断。
+  const hrName = String(item.job?.recruiterName || '').trim();
+  const notifyBase = {
+    convKey: hrReplyConvKey(hrName, company),
+    conversation: hrName || company,
+    jobTitle: title,
+    hrName,
+    hrMessage,
+  };
 
   addChatLog({
     level: 'stage', stage: 'ai_reply', jobId, jobTitle: title, company,
@@ -178,6 +202,10 @@ async function aiReplyAndSend(args: {
   // HR 明确拒绝：不再回复，收口该会话（记录指纹 + 拒绝时间，避免下一轮重复生成）
   if (reply.outcome === 'hr_rejected') {
     updatePending(item.id, { hrRejectedAt: Date.now(), hrRepliedFingerprint: hrMessage });
+    // 求职进展：HR 拒绝是终态，总是覆盖（即使此前已到「已约面 / 已面试」）
+    markProgress(item.id, 'rejected_by_hr');
+    // 终态也提醒：HR 明确拒绝是用户最该立刻知道的一条（文案不同、绕过 10 分钟聚合）
+    notifyHrReply({ ...notifyBase, rejected: true });
     addChatLog({
       level: 'warn', stage: 'ai_reply', jobId, jobTitle: title, company,
       msg: 'AI 判断 HR 已明确拒绝，结束该会话（不再回复）', errorDetail: hrPreview,
@@ -195,6 +223,11 @@ async function aiReplyAndSend(args: {
     return { outcome: 'none' };
   }
 
+  // 确认是「HR 真发来了消息」才提醒（上面 !reply.text 分支是系统提示/表情等无实质内容，不打断用户）。
+  // 位置放在发送之前：无论回复最终发没发出去，用户都该知道 HR 回了什么；
+  // 发送结果另有日志与岗位状态收口，通知不承担「成功/失败」的表达。
+  notifyHrReply(notifyBase);
+
   addChatLog({
     level: reply.method === 'ai' ? 'info' : 'warn',
     stage: 'ai_reply', jobId, jobTitle: title, company,
@@ -202,6 +235,8 @@ async function aiReplyAndSend(args: {
     errorDetail: reply.text,
   });
   if (reply.interview) {
+    // 求职进展：AI 识别到面试邀约 → 已约面（只前进，不覆盖更靠后的阶段）
+    markProgress(item.id, 'interview_scheduled');
     addChatLog({
       level: 'info', stage: 'ai_reply', jobId, jobTitle: title, company,
       msg: '📅 AI 识别到 HR 面试邀约（请及时在 BOSS 内确认具体安排）',
@@ -660,10 +695,23 @@ async function watchCycle(run: WatchRun): Promise<void> {
         model: useSettingsStore.getState().config.model,
       });
 
+      // 通知参数（P1-4）：会话名即 HR 名（工作台岗位按 recruiterName/company 归一匹配，点通知能高亮到同一张卡）
+      const notifyBase = {
+        convKey: hrReplyConvKey(convName, convCompany),
+        conversation: convName,
+        jobTitle: matched?.job?.title || open.jobName || '',
+        hrName: convName,
+        hrMessage: fp,
+      };
+
       // HR 明确拒绝：收口该会话，不再回复
       if (reply.outcome === 'hr_rejected') {
         watchHandled.set(convName, fp);
-        if (matched) useDataStore.getState().updatePending(matched.id, { hrRejectedAt: Date.now(), hrRepliedFingerprint: fp });
+        if (matched) {
+          useDataStore.getState().updatePending(matched.id, { hrRejectedAt: Date.now(), hrRepliedFingerprint: fp });
+          markProgress(matched.id, 'rejected_by_hr');
+        }
+        notifyHrReply({ ...notifyBase, rejected: true });
         addChatLog({
           level: 'warn', stage: 'ai_reply', jobTitle: matched?.job?.title || convName, company: convCompany,
           msg: `AI 判断「${convName}」已明确拒绝，结束该会话（不再回复）`,
@@ -682,6 +730,10 @@ async function watchCycle(run: WatchRun): Promise<void> {
         continue;
       }
 
+      // 确认是 HR 真发来了消息才提醒（上一条分支是系统提示/表情等无实质内容，不打断用户；
+      // 位置同样放在发送之前：用户要知道 HR 回了什么，与回复是否发送成功无关）
+      notifyHrReply(notifyBase);
+
       addChatLog({
         level: reply.method === 'ai' ? 'info' : 'warn',
         stage: 'ai_reply', jobTitle: matched?.job?.title || convName, company: convCompany,
@@ -689,6 +741,7 @@ async function watchCycle(run: WatchRun): Promise<void> {
         errorDetail: reply.text,
       });
       if (reply.interview) {
+        if (matched) markProgress(matched.id, 'interview_scheduled');
         addChatLog({
           level: 'info', stage: 'ai_reply', jobTitle: matched?.job?.title || convName, company: convCompany,
           msg: '📅 AI 识别到 HR 面试邀约（请及时在 BOSS 内确认具体安排）',
@@ -816,6 +869,15 @@ interface AutoChatState {
   activeChatId: string | null;
   /** 跟聊监听当前正在巡检的岗位 id（UI 高亮用） */
   watchActiveId: string | null;
+  /**
+   * 会话聚焦请求（来自系统通知点击）：AutoChat 页据此高亮并滚动到该会话对应的岗位卡。
+   * 带 at 时间戳 —— 同一会话连点两次也要重新触发滚动（值相同则 React 不会重渲染）。
+   */
+  conversationFocus: { key: string; at: number } | null;
+  /** 聚焦指定会话（HR 名或公司名，按去空白/小写归一匹配）；空值忽略 */
+  focusConversation: (name: string) => void;
+  /** 清空聚焦（离开跟聊页 / 用户手动操作后） */
+  clearConversationFocus: () => void;
   progress: AutoChatProgress;
   /** 启动后台批量沟通：持续处理当前队列，并自动接收工作台新批准岗位 */
   start: (scope?: AutoChatScope) => void;
@@ -832,7 +894,15 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
   watchRunning: false,
   activeChatId: null,
   watchActiveId: null,
+  conversationFocus: null,
   progress: { index: 0, total: 0 },
+
+  focusConversation: (name: string) => {
+    const key = String(name || '').trim();
+    if (!key) return;
+    set({ conversationFocus: { key, at: Date.now() } });
+  },
+  clearConversationFocus: () => set({ conversationFocus: null }),
 
   start: (scope?: AutoChatScope) => {
     if (currentRun || useAutoChatStore.getState().chatRunning) return;

@@ -34,8 +34,15 @@ interface ElectronBridgeApi {
   winAlwaysOnTopSet?: (value: boolean) => void;
   onWindowAlwaysOnTopChanged?: (callback: (isOnTop: boolean) => void) => () => void;
   // 系统通知 / 托盘常驻（设置页开关；主进程按同一份偏好再拦截一次）
-  notify?: (payload: { title?: string; body?: string }) => Promise<{ ok: boolean; skipped?: string; error?: string }>;
+  notify?: (payload: {
+    title?: string;
+    body?: string;
+    /** 点击通知后回传给渲染层的动作（主进程原样转发，业务语义由渲染层解释） */
+    clickAction?: { kind: string; conversation?: string };
+  }) => Promise<{ ok: boolean; skipped?: string; error?: string }>;
   setTrayPrefs?: (prefs: { closeToTray?: boolean; notify?: boolean }) => void;
+  /** 订阅「通知被点击后回传的动作」，返回取消订阅函数 */
+  onNotifyAction?: (callback: (action: { kind?: string; conversation?: string }) => void) => () => void;
   // Camoufox 隐身引擎（可选增强，Python 桥）——platform 参数（boss/liepin/zhaopin/job51）
   camoufoxStatus?: (platform?: string) => Promise<{ python: boolean; pythonCmd?: string | null; camoufox: boolean; running: boolean; ready: boolean; message?: string; engine?: unknown }>;  camoufoxCall?: (action: string, payload?: Record<string, unknown>) => Promise<any>;
   camoufoxStop?: () => void;
@@ -101,13 +108,18 @@ interface ElectronBridgeApi {
   backupWrite?: (bundle: unknown) => Promise<{ ok?: boolean; file?: string; size?: number; error?: string }>;
   backupRead?: () => Promise<{ ok?: boolean; file?: string | null; bundle?: { updatedAt?: number; keys?: Record<string, string | null> } | null; error?: string }>;
   backupDelete?: () => Promise<{ ok?: boolean; error?: string }>;
-  // 岗位队列文件仓储（issue #10）：pending / qualifiedExports 存于 <userData>/queue/
+  // 岗位/简历文件仓储（issue #10 / P3）：存于 <userData>/queue/（per-item + index + resume）
   // 'localstorage' 表示已通过 BOSSCLAW_QUEUE_STORE 环境变量回滚到旧路径
   queueStoreMode?: 'file' | 'localstorage';
   queueLoad?: () => Promise<{ ok: boolean; data?: unknown; source?: string; recovered?: boolean; corrupt?: boolean; error?: string }>;
   queueSave?: (text: string, seq: number, opts?: { migrationSnapshot?: boolean }) => Promise<{ ok: boolean; stale?: boolean; seq?: number; bytes?: number; at?: number; error?: string }>;
+  queueSavePatch?: (text: string, seq: number) => Promise<{ ok: boolean; stale?: boolean; seq?: number; bytes?: number; at?: number; error?: string }>;
   queueClear?: () => Promise<{ ok: boolean; error?: string }>;
-  queueUsage?: () => Promise<{ ok: boolean; bytes?: number; bakBytes?: number; totalBytes?: number; error?: string }>;
+  queueUsage?: () => Promise<{
+    ok: boolean; bytes?: number; bakBytes?: number; totalBytes?: number;
+    queueBytes?: number; queueBakBytes?: number; resumeBytes?: number; resumeBakBytes?: number;
+    snapshotBytes?: number; snapshotCount?: number; items?: number; error?: string;
+  }>;
   // 采集事件库（招聘趋势分析）：<userData>/collect-events/YYYY-MM.jsonl，按月分片、保留 365 天
   collectEventsLoad?: (opts?: { from?: number; to?: number }) => Promise<{ ok: boolean; events?: unknown[]; error?: string }>;
   collectEventsUpsert?: (events: unknown[]) => Promise<{ ok: boolean; count?: number; error?: string }>;

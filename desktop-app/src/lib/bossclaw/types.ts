@@ -6,6 +6,10 @@
 import type { FitLevel } from './fitLevel';
 // 活跃时段 / 批次休息配置（实现与默认值在 activityWindow.ts —— 纯函数模块，无运行时循环依赖）
 import type { ActiveHoursConfig, BatchRestConfig } from './activityWindow';
+// 企业工商字段（P1-5 A 层：解析与风险提示在 companyProfile.ts，同样是纯函数模块，type-only 引用）
+import type { CompanyBizProfile } from './companyProfile';
+// 企业背调 B/C 层（负面信号 + AI 评级）的类型与纯函数在 companyDueDiligence.ts，type-only 引用
+import type { DueDiligenceState } from './companyDueDiligence';
 
 export type ExecutionMode = 'review' | 'auto';
 
@@ -78,6 +82,13 @@ export interface AppConfig {
   closeToTray?: boolean;
   /** 关键事件发系统通知（首次投递验收 / 风控暂停 / 定时任务完成），默认 true；关掉即静默 */
   systemNotify?: boolean;
+  /**
+   * HR 回复提醒（默认 true）：AI 跟聊扫到 HR 新消息时弹一条系统通知。
+   * 与 systemNotify 是两层开关 —— 两者同时为 false 才静默；关掉本项只关「HR 新消息」，
+   * 首次投递验收 / 风控暂停等关键事件仍会提醒（它们的口径强于普通新消息）。
+   * 同一会话 10 分钟内只提醒一次（连发多条不刷屏），HR 明确拒绝绕过聚合且文案不同。
+   */
+  hrReplyNotify?: boolean;
   betweenJobsSeconds: number;
   /**
    * 活跃时段（模拟真人作息）：时段外**自动暂停投递**。
@@ -476,6 +487,18 @@ export interface JobMeta {
   encryptUserId?: string;
   /** 招聘方职位（BOSS 官方接口 bossTitle） */
   recruiterTitle?: string;
+  /**
+   * 企业工商信息（P1-5 A 层，来自招聘平台公司主页自身字段，见 companyProfile.ts）。
+   * 只做展示与确定性提示：**不参与投递判定**（不改 status、不影响排序、不自动跳过）。
+   * 缺失 = 从未采集过；非空但字段缺项时用 `missing` 明确「没采到」，不要当成「企业没有」。
+   */
+  companyProfile?: CompanyBizProfile;
+  /**
+   * 企业背调 B/C 层（负面信号 + AI 评级，见 companyDueDiligence.ts）。
+   * 与 A 层同样**只做提示**：不参与投递判定、不改 status、不影响排序与队列。
+   * 每条信号与每条 AI 依据都必须挂到具体来源（编号），挂不上的依据在解析阶段就被丢弃。
+   */
+  dueDiligence?: DueDiligenceState;
   [key: string]: unknown;
 }
 
@@ -489,6 +512,18 @@ export type PendingStatus =
   | 'skipped'
   | 'rejected'
   | 'ignored';
+
+/**
+ * 求职流程进展（P1-6）。**与 PendingStatus 正交**：
+ * status 描述「投递到哪一步」，progressStage 描述「HR 那边到哪一步」。
+ * 刻意不扩 PendingStatus 枚举 —— 全仓 40+ 处按 status 分支渲染 / 统计，加值会静默架空它们。
+ */
+export type ProgressStage =
+  | 'replied'
+  | 'interview_scheduled'
+  | 'interviewed'
+  | 'offer'
+  | 'rejected_by_hr';
 
 export interface PendingItem {
   id: string;
@@ -513,6 +548,14 @@ export interface PendingItem {
   hrRepliedFingerprint?: string;
   /** AI 跟聊：HR 明确拒绝的时间戳（>0 时该会话停止继续跟聊） */
   hrRejectedAt?: number;
+  /**
+   * 求职流程进展（P1-6）：只做流程跟踪，**不改 status、不进投递队列、不影响排序与过滤**。
+   * 写入点：AI 跟聊识别到面试邀约 → interview_scheduled；HR 明确拒绝 → rejected_by_hr；
+   * 其余（已回复 / 已面试 / 已获 Offer）由用户手动标记。缺失 = 未标记（统计归「未标记」）。
+   */
+  progressStage?: ProgressStage;
+  /** 求职流程进展最后一次更新时间（仅展示；手动清除时一并清空） */
+  progressUpdatedAt?: number;
   /** 已打开沟通窗口时间戳（工作台「点击立即沟通」后、尚未发送文字） */
   openedAt?: number;
   /** 是否因风控（验证/封禁）被禁止重试 */

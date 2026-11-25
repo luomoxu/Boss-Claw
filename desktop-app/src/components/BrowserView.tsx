@@ -147,6 +147,12 @@ export interface WebviewApi {
    * 避免事件序列异常时一直误判「加载中」。返回 {error} 表示探测失败（preload 未就绪等）。
    */
   pageStatus: (tabId?: string) => Promise<any>;
+  /**
+   * 只读读取当前页面正文（preload 的 page-read：URL / 标题 / bodyText 前 12k / 列表卡摘要）。
+   * 企业工商信息（P1-5 A 层）用它取公司主页正文，解析放在渲染层（companyProfile.ts）——
+   * 这样解析逻辑能离线回归，而 preload 里的代码没法单测。不滚动、不点击、不改页面。
+   */
+  readPage: (tabId?: string) => Promise<any>;
 }
 
 interface Props {
@@ -700,12 +706,12 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
     return tab.id;
   }, []);
 
-  // 白名单拦截：非招聘平台网址不允许在内置浏览器访问，可转系统浏览器
+  // 白名单拦截：非白名单网址不允许在内置浏览器访问，可转系统浏览器
   const confirmOpenExternal = useCallback((url: string) => {
     const host = (() => { try { return new URL(url).hostname; } catch { return url; } })();
     Modal.confirm({
-      title: '该网址不在招聘平台白名单内',
-      content: `「${host}」不在白名单中。内置浏览器仅允许访问白名单内的招聘平台，可在系统浏览器中打开。`,
+      title: '该网址不在内置浏览器白名单内',
+      content: `「${host}」不在白名单中。内置浏览器仅允许访问白名单内的招聘平台与背调核查站点，可在系统浏览器中打开。`,
       okText: '在系统浏览器打开',
       cancelText: '取消',
       onOk: () => { electronApi.external.open(url); },
@@ -728,7 +734,7 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
   // ===== 在新标签打开 URL：默认 detail（沟通详情页，完成后自动关闭）；非白名单网址拦截 =====
   const openInNewTab = useCallback((url?: string, title?: string, kind: 'main' | 'detail' = 'detail'): string => {
     const target = url || BOSS_HOME;
-    // 白名单约束：仅招聘平台网址允许在内置浏览器新建标签（其余可转系统浏览器）
+    // 白名单约束：仅招聘平台与背调核查站点允许在内置浏览器新建标签（其余可转系统浏览器）
     if (url && !isWhitelistedUrl(target)) {
       confirmOpenExternal(target);
       return '';
@@ -1050,6 +1056,7 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
       bossApi,
       platformApply,
       pageStatus,
+      readPage,
       getActiveTabId: () => activeIdRef.current || '',
       getFirstTabId: () => {
         const list = tabsRef.current;
@@ -1066,7 +1073,7 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
         return (main || list.find((t) => resolvePlatform(t.url) === platform))?.id || '';
       },
     };
-  }, [apiRef, send, loadURL, closeTabById, openInNewTab, openEngineTab, loadURLInTab, sendInTab, hasTab, isPreloadReady, isLoading, getMainTabId, getDetailTabIds, bossApi, platformApply, pageStatus, tabBrief]);
+  }, [apiRef, send, loadURL, closeTabById, openInNewTab, openEngineTab, loadURLInTab, sendInTab, hasTab, isPreloadReady, isLoading, getMainTabId, getDetailTabIds, bossApi, platformApply, pageStatus, readPage, tabBrief]);
   const prefillGreeting = useCallback((greeting: string) => cmdOnce('prefill-greeting', { greeting }, 20000), [cmdOnce]);
   const runDomDump = useCallback((tabId?: string) => {
     sendInTab(tabId || '', 'webview-command', { action: 'dom-dump' });
