@@ -52,7 +52,9 @@ const PROFILES: Record<RecommendTabPlatform, RecommendTabProfile> = {
     activeTabSelector: '.expect-row .expect-item.is-active',
     cardSelector: 'div.job-list-item, div[class*="job-card-pc-container"], div[class*="jobCardPcContainer"]',
     nonTabLabels: ['编辑求职期望'],
-    scrollSelector: '#lp-search-job-list, [class*="job-list-box"]',
+    // 首页（无关键字采集入口）没有内部列表滚动容器，整页由 window 滚动：
+    // 末尾的 `html` 是兜底目标，搜索页仍会先命中 `#lp-search-job-list`。
+    scrollSelector: '#lp-search-job-list, [class*="job-list-box"], html',
   },
 };
 

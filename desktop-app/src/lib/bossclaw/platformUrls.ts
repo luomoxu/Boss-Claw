@@ -19,6 +19,19 @@ import { buildJobSearchUrl, RANDOM_COLLECT_LABEL, type SearchQueueItem } from '.
 
 // ==================== 猎聘 liepin ====================
 export const LIEPIN_BASE_URL = 'https://www.liepin.com/zhaopin/';
+/**
+ * 猎聘首页 ——「无关键字采集」的入口。
+ *
+ * 为什么不继续自建 `?city=&dq=&salaryCode=…` 搜索链接：站点前端（`search-jobs-v2` bundle）
+ * 的检索模式判定是「任一筛选参数存在、或 city/dq ≠ 410（全国）→ 关键词模式」；
+ * 推荐（求职期望）模式只在**没有任何筛选且没有关键词**时进入。自建链接把城市/薪资/
+ * 基础条件全拼进 URL、`key` 却为空 → 页面停在关键词模式又搜不到东西，列表一直不渲染，
+ * 表现为「采集时一直在加载」。首页本身按账号求职期望/精选位直接渲染岗位卡，打开即可采集。
+ *
+ * 注意：首页不带城市/薪资参数 —— 城市由账号内求职期望决定；本文件的筛选码表仍用于
+ * 关键词模式（有投递方向）与 Camoufox 隐身通道，两者不受影响。
+ */
+export const LIEPIN_HOME_URL = 'https://www.liepin.com/';
 // 城市码（Auto-JobHunter 实测 + get_jobs 配置口径；未知城市回退全国 410）
 export const LIEPIN_CITY_CODES: Record<string, string> = {
   全国: '410', 北京: '010', 上海: '020', 天津: '030', 重庆: '040',
@@ -450,7 +463,8 @@ export function describePlatformCriteria(c?: PlatformSearchCriteria | null): str
  * 求职类型 / 薪资），非 BOSS 平台由 Camoufox 平台模块（`camoufox/platforms/filters.py`）
  * 翻译为各平台筛选参数后拼进搜索 URL —— 各维度是否已接通见该文件 FILTER_CAPABILITIES
  * 能力表（码值未验证的维度按「不臆造码、宁可多召回不误杀」原则不附加）。
- * 开启「无关键字采集」时同上：URL 只去掉关键词字段，其余用户设置不变。
+ * 开启「无关键字采集」时：BOSS / 智联 / 前程无忧只去掉关键词字段、其余设置不变；
+ * **猎聘直接使用首页**（{@link LIEPIN_HOME_URL}），不再拼带筛选的搜索链接。
  */
 export function buildPlatformSearchQueue(
   platform: JobPlatform,
@@ -464,15 +478,21 @@ export function buildPlatformSearchQueue(
   const queue: PlatformSearchQueueItem[] = [];
   const seen = new Set<string>();
 
-  // 无关键字采集：同 buildSearchQueue —— 只删除关键词字段，其余筛选按用户设置保留。
+  // 无关键字采集：BOSS 同 buildSearchQueue —— 只删除关键词字段，其余筛选按用户设置保留。
+  // 猎聘例外：不再自建带筛选的搜索链接，直接打开首页（原因见 LIEPIN_HOME_URL 注释）。
+  //   ⚠️ 猎聘队列**不能按 URL 去重**：同一份队列同时供 Camoufox 隐身通道使用，它按
+  //   `item.location` 逐城搜索（不消费 url），按 URL 去重会把多城市/多求职类型折叠成一条。
   if (config.collectWithoutKeyword) {
     for (const location of locations) {
       for (const employmentType of employmentTypes) {
-        const url = buildPlatformSearchUrl(platform, {
-          city: location, salary: config.salary, page: 1, criteria,
-        });
-        if (seen.has(url)) continue;
-        seen.add(url);
+        const url = platform === 'liepin'
+          ? LIEPIN_HOME_URL
+          : buildPlatformSearchUrl(platform, {
+            city: location, salary: config.salary, page: 1, criteria,
+          });
+        const dedupeKey = platform === 'liepin' ? `${url}|${location}|${employmentType}` : url;
+        if (seen.has(dedupeKey)) continue;
+        seen.add(dedupeKey);
         queue.push({
           platform, url, keyword: '', location, employmentType, criteria,
           directionId: '',

@@ -1992,7 +1992,9 @@ function collectCards(quiet = false) {
     // 或薪资文本（含「元」后缀，如智联「9000-10000元」——排除筛选栏 / 无关 li）
     // 猎聘新版卡既无锚点也无主进程注解，只能靠薪资文本判定 —— 其数字可能是字体混淆的
     // PUA 码位，必须先还原再匹配，否则整页卡片会被判成「无效卡」而一张都采不到。
-    return Boolean(el.querySelector?.(LINK_SELECTOR))
+    // 「锚点本身即卡片」的模板（猎聘首页 .home-comp-jobs-item）也认：querySelector 不含自身，
+    // 只用它会把这些卡判成无效（有薪资文本时兜底能过，薪资「面议」的卡则会被整张丢弃）。
+    return Boolean(cardAnchorEl(el))
       || Boolean(el.getAttribute?.('data-bossclaw-jobdetail'))
       || SALARY_TEXT_RE.test(decodeSalaryDigits(content));
   });
@@ -2102,11 +2104,15 @@ const CITY_KEYWORDS = /北京|上海|广州|深圳|杭州|成都|西安|武汉|�
 const ORG_WORDS = /公司|集团|科技|技术|有限|工作室|研究所|研究院|厂|局|社|院|银行|大学|学院|医院|超市|酒店|传媒|网络|信息|软件|电子商务|股份|企业|中心|协会|事务所|律所|品牌/;
 // 整串「城市·区·街道」（首段必须是城市名，避免「华为·杭州研究所」这类「组织·地点」被误删）
 const LOCATION_ONLY_RE = new RegExp(`^(?:${CITY_KEYWORDS.source})(?:${LOCATION_SEP.source}[\\u4e00-\\u9fa5A-Za-z0-9]+){1,3}$`);
+// 猎聘（列表 / 首页）把地点写成「城市-区」（「长沙-韭菜园」「北京-北七家」），
+// 同样按「整串即地点」处理 —— 否则公司名行兜底会把地点当公司写库。
+// 同样要求首段是城市名，避免误伤「ATL-新能源」这类公司名。
+const LOCATION_DASH_RE = new RegExp(`^(?:${CITY_KEYWORDS.source})-[\\u4e00-\\u9fa5A-Za-z0-9]+(?:-[\\u4e00-\\u9fa5A-Za-z0-9]+){0,2}$`);
 function looksLikeLocation(text) {
   const t = String(text || '').trim();
   if (!t) return false;
-  // 整串即地点（城市·区·街道，首段为城市名）
-  if (LOCATION_ONLY_RE.test(t)) return true;
+  // 整串即地点（城市·区·街道 / 城市-区，首段为城市名）
+  if (LOCATION_ONLY_RE.test(t) || LOCATION_DASH_RE.test(t)) return true;
   // 含地点分隔符且全文不含任何组织词（公司/科技/集团…）→ 疑似纯地名，丢弃
   if (LOCATION_SEP.test(t) && !ORG_WORDS.test(t)) return true;
   return false;
@@ -2149,9 +2155,24 @@ function pickFromCard(card, selectorCandidates) {
   return '';
 }
 
+/**
+ * 卡片自身的详情锚点。
+ * 多数平台归一后的卡片是**包着**锚点的容器（`card.querySelector` 即可）；
+ * 但也有「锚点本身即卡片」的模板（猎聘首页 `.home-comp-jobs-item`、BOSS 无 wrapper 的
+ * `a[href*="/job_detail/"]`）—— `querySelector` 不含自身，必须先用 `matches` 兜住，
+ * 否则 href/jobId 会落空（猎聘首页卡还会退回到**被截断**的 data-jobid）。
+ */
+function cardAnchorEl(card) {
+  if (!card) return null;
+  try {
+    if (card.matches?.(LINK_SELECTOR)) return card;
+  } catch { /* matches 在极端 DOM 上可能抛错，退回 querySelector */ }
+  return card.querySelector?.(LINK_SELECTOR) || null;
+}
+
 // 卡片身份（对齐 job-claw-main cardIdentity，多选择器候选 + 行兜底）
 function cardIdentity(card) {
-  const anchor = card.querySelector(LINK_SELECTOR);
+  const anchor = cardAnchorEl(card);
   // 智联无 jobdetail 锚点的渲染变体（标题为 span 而非 a）：主进程按 __INITIAL_STATE__
   // 匹配后标注的详情 URL 兜底（见 main.cjs ZP_DETAIL_NAV_SCRIPT 的 annotate）
   const href = anchor?.href || card.getAttribute?.('data-bossclaw-jobdetail') || '';
@@ -2232,7 +2253,7 @@ function cardFields(card) {
 
 // 去重 key（对齐 job-claw-main cardKey）
 function collectCardKey(card) {
-  const anchor = card.querySelector(LINK_SELECTOR);
+  const anchor = cardAnchorEl(card);
   // 智联无锚点变体：认主进程标注的 data-bossclaw-jobdetail（保证 processed 去重与 URL 一致）
   return anchor?.href || card.getAttribute('data-bossclaw-jobdetail') || card.getAttribute('data-jobid') || card.getAttribute('data-tlg-ext') || textOf(card).slice(0, 220);
 }

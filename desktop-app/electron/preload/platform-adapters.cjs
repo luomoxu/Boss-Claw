@@ -91,7 +91,12 @@ const PLATFORM_CARD_SELECTORS = Object.freeze({
     // ① 驼峰容器（当前生产形态，真机源码逐字核对）+ ② 连字符（历史/灰度模板）
     'div[class*="jobCardPcContainer"]',
     'div[class*="job-card-pc-container"]',
-    // ③ 卡片锚点：同时覆盖新版 /job/xxx.shtml 与 SEO 模板 /a/xxx.shtml（后者见「猜你喜欢」列表）
+    // ③ 首页（无关键字采集入口，2026-11 真机源码取证）：
+    //   `.seo-jobcard2-common` 是「行业精选」卡片（内含 a.jobcard2-detail-box + 公司块），
+    //   `.home-comp-jobs-item` 是「公司热招」卡片（锚点本身即卡片，无内层容器）。
+    '.seo-jobcard2-common',
+    '.home-comp-jobs-item',
+    // ④ 卡片锚点：同时覆盖新版 /job/xxx.shtml 与 SEO 模板 /a/xxx.shtml（后者见「猜你喜欢」列表）
     'a[data-nick="job-detail-job-info"]',
     'li[data-tlg-ext]',
     'a[href*="/job/"]',
@@ -117,7 +122,9 @@ const PLATFORM_CARD_CONTAINER_SELECTOR = Object.freeze({
   boss: '.job-card-wrapper, .job-card-box, li',
   // 猎聘：必须显式列出**驼峰**容器 —— `[class*="job-card"]` 不匹配 `jobCardPcContainer`，
   // 缺它会让 closest() 越过卡片本身、一路吸附到外层列表容器（整页塌成 1 条候选）。
-  liepin: 'div[class*="jobCardPcContainer"], li, [class*="job-card"], [class*="joblist"], [class*="jobItem"], [class*="job-list"]',
+  // 首页两类卡片：`.seo-jobcard2-common` 需显式列出（否则 closest() 越过卡片吸附到外层模块），
+  // `.home-comp-jobs-item` 自身就是卡片（列在这里便于 `el.matches`/self 归一）。
+  liepin: 'div[class*="jobCardPcContainer"], .seo-jobcard2-common, .home-comp-jobs-item, li, [class*="job-card"], [class*="joblist"], [class*="jobItem"], [class*="job-list"]',
   zhaopin: 'li, [class*="job-card"], [class*="joblist"], [class*="jobItem"], [class*="job-list"]',
   job51: 'li, [class*="job-card"], [class*="joblist"], [class*="jobItem"], [class*="job-list"]',
 });
@@ -176,6 +183,12 @@ const PLATFORM_FIELD_SELECTORS = Object.freeze({
       '[class*="search-job-card-name-text"]',
       '[class*="search-job-card-name"]',
       '[class*="job-card-name"]',
+      // 猎聘首页（2026-11 真机源码）：
+      //   `.jobcard2-title` = 行业精选卡标题（注意别用 `[class*="jobcard2-title"]`，
+      //   它会先命中父级 `.jobcard2-title-group`，把地点一起并进标题）；
+      //   `.jobs-item-name` = 公司热招卡标题。
+      '.jobcard2-title',
+      '.jobs-item-name',
       '[data-nick="job-detail-job-info"] [title]', // 标题 div 带 title="岗位名"
       '[class*="ellipsis-1"]',
       'h3', '.job-name',
@@ -184,6 +197,9 @@ const PLATFORM_FIELD_SELECTORS = Object.freeze({
       '[class*="companyName"]',
       '[class*="company-name"]',
       '[class*="comp-name"]',
+      // 首页行业精选卡的公司名（`[class*="company"]` 会先命中 a.jobcard2-company-box，
+      // 把行业/融资/规模标签一起带进公司名）
+      '.jobcard2-company-title',
       '[data-nick="job-detail-company-info"] [class*="ellipsis-1"]',
       '[class*="company"]',
     ],
@@ -194,6 +210,9 @@ const PLATFORM_FIELD_SELECTORS = Object.freeze({
       //    `platformSalaryFromCard()`（按 jobTitleBox 父节点的兄弟结构提取）兜底。
       //    保留本列表是为了兼容可能存在语义类名的历史/灰度模板，**不要**据此认为薪资有选择器可依。
       //    也**不要**改用 `[class*="ellipsis-1"]`：同卡内标题/城市/公司名共用该类，会先命中标题。
+      // 首页（2026-11 真机源码）有稳定的语义类名，直接取：`.jobcard2-salary` / `.jobs-item-salary`
+      '.jobcard2-salary',
+      '.jobs-item-salary',
       '[class*="jobSalary"]',
       '[class*="job-salary"]',
       '[class*="salary"]',
@@ -206,6 +225,9 @@ const PLATFORM_FIELD_SELECTORS = Object.freeze({
       // 2026-11 新版列表：span.search-job-card-location
       '[class*="search-job-card-location"]',
       '[class*="job-location"]',
+      // 首页：行业精选 `.jobcard2-location` / 公司热招 `.jobs-item-meta`
+      '.jobcard2-location',
+      '.jobs-item-meta',
     ],
     recruiterTitle: [
       '[class*="recruiterName"]',
@@ -266,7 +288,10 @@ const PLATFORM_FIELD_SELECTORS = Object.freeze({
 /** 列表页 URL 形态（与既有 platformListPage 口径一致） */
 const PLATFORM_LIST_URL_RE = Object.freeze({
   boss: /\/web\/geek\/(jobs|job|recommend)/i,
-  liepin: /\/zhaopin\//i,
+  // 猎聘：① 搜索页 /zhaopin/ ② 首页 https://www.liepin.com/ —— 无关键字采集直接打开首页
+  // （首页本身就渲染推荐/精选岗位；带 city/salaryCode 等参数的自建搜索链接会被站点判成
+  //  关键词模式且 key 为空，列表永远不出，见 platformUrls.ts 的 LIEPIN_HOME_URL 注释）
+  liepin: /\/zhaopin\/|^(?:https?:)?\/\/(?:www\.)?liepin\.com\/?(?:[?#]|$)/i,
   // 智联：旧路径式 /sou/（应用自身搜索 URL）与新版 /jobs/?pageMode=search|recommend
   // （2026-09 起官网跳转/用户手输的规范形态，如 https://www.zhaopin.com/jobs/?pageMode=recommend）
   zhaopin: /\/(sou|jobs)\//i,

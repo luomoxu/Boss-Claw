@@ -1728,15 +1728,21 @@ export default function Workbench() {
         : platform === 'boss'
           ? '逐岗位平滑滚动 + 高亮 + 点击展开详情'
           : '列表级滚动 + 高亮（不点开详情，详情 JD 按平台详情接口补齐）'
-    }${cfgP.collectWithoutKeyword ? '（无关键字模式：链接不带 query，仅保留城市 / 求职类型等筛选）' : ''}`);
+    }${cfgP.collectWithoutKeyword
+      ? (platform === 'liepin'
+        ? '（无关键字模式：直接打开猎聘首页，按账号求职期望/推荐位采集，不拼自定义搜索链接）'
+        : '（无关键字模式：链接不带 query，仅保留城市 / 求职类型等筛选）')
+      : ''}`);
 
     // ===== 无关键字采集 = 推荐 tab 采集 + 列表页两级筛选（BOSS / 猎聘）=====
     // 每个搜索组合（一个城市）依次走：
     //   发现 tab → 逐 tab：切换 → 扫描（只滚不点）→ ① 确定性预筛 → ② AI 标题筛选
     //   → ③ 只对通过的岗位点开详情（allowKeys；非内联详情平台为「只对通过的岗位补齐详情」）
     // 失败口径：tab 发现失败 → 只采当前列表（等价改造前）；AI 标题筛选失败 → 不筛标题（不误杀）。
-    // 页面依据：BOSS `/web/geek/jobs` 与猎聘 `/zhaopin/`（无 key）都按账号求职意向出推荐列表，
-    // 页内以意向 tab 切换；两者都不走平台推荐接口，只做等价于人工的「点 tab + 滚列表」。
+    // 页面依据：BOSS `/web/geek/jobs` 与猎聘首页（无关键字模式直接打开 `https://www.liepin.com/`；
+    // 猎聘 `/zhaopin/` 带任何筛选参数都会被判成关键词模式、key 为空时列表不渲染）都按账号
+    // 求职意向出推荐/精选列表，页内若有意向 tab 则切换；两者都不走平台推荐接口，
+    // 只做等价于人工的「点 tab + 滚列表」。
     const runRecommendTabsForItem = async (
       tabId: string,
       baseRun: Partial<TaskRun>,
@@ -2039,6 +2045,31 @@ export default function Workbench() {
           progress: Math.round(((qi + 1) / queue.length) * 100),
         });
         await visualWait(800);
+        // 猎聘无关键字采集：队列里的城市/求职类型组合都指向同一个首页（城市由账号求职期望决定），
+        // 首组已扫完整页，其余组合不再重复打开同一首页空跑；直接收口为成功。
+        // 队列本身仍按城市生成 —— Camoufox 隐身通道要按 location 逐城搜索。
+        if (platform === 'liepin' && cfgP.collectWithoutKeyword && qi < queue.length - 1) {
+          for (const rest of queue.slice(qi + 1)) {
+            markCollectRun(collectRunId(platform, rest), {
+              directionId: rest.directionId,
+              directionName: rest.directionName || '采集',
+              directionPriority: rest.directionPriority ?? 0,
+              directionScore: rest.directionScore ?? 0,
+              keyword: rest.keyword,
+              location: rest.location,
+              employmentType: rest.employmentType,
+            }, {
+              status: 'success',
+              stage: 'success',
+              stageLabel: '首页推荐已由本批首组覆盖',
+              processed: 0,
+              discovered: 0,
+              progress: 100,
+            });
+          }
+          addLog('info', `猎聘无关键字采集使用首页推荐：其余 ${queue.length - 1 - qi} 个组合与首页相同，不再重复扫描`);
+          break;
+        }
         continue;
       }
 
