@@ -573,12 +573,50 @@
   const ORG_WORDS = /公司|集团|科技|技术|有限|工作室|研究所|研究院|厂|局|社|院|银行|大学|学院|医院|超市|酒店|传媒|网络|信息|软件|电子商务|股份|企业|中心|协会|事务所|律所|品牌/;
   // 整串「城市·区·街道」（首段必须是城市名，避免「华为·杭州研究所」这类「组织·地点」被误删）
   const LOCATION_ONLY_RE = new RegExp(`^(?:${CITY_KEYWORDS.source})(?:${LOCATION_SEP.source}[\\u4e00-\\u9fa5A-Za-z0-9]+){1,3}$`);
+  // 猎聘把地点写成「城市-区」（「长沙-韭菜园」「北京-北七家」），单独识别（首段须为城市名）
+  const LOCATION_DASH_RE = new RegExp(`^(?:${CITY_KEYWORDS.source})-[\\u4e00-\\u9fa5A-Za-z0-9]+(?:-[\\u4e00-\\u9fa5A-Za-z0-9]+){0,2}$`);
   function looksLikeLocation(text) {
     const t = String(text || '').trim();
     if (!t) return false;
-    if (LOCATION_ONLY_RE.test(t)) return true;
+    if (LOCATION_ONLY_RE.test(t) || LOCATION_DASH_RE.test(t)) return true;
     if (LOCATION_SEP.test(t) && !ORG_WORDS.test(t)) return true;
     return false;
+  }
+  /**
+   * 地点文本归一化：剥掉包裹方括号与多余空白（猎聘旧模板写成「【成都-青羊区】」）；
+   * 归一后不含实义字符（只剩「【」/标点）→ 返回空串，交给下一个候选。
+   */
+  function normalizeLocationText(raw) {
+    let t = String(raw == null ? '' : raw).replace(/\s+/g, ' ').trim();
+    const wrapped = t.match(/^【\s*([^】]{1,30})\s*】$/);
+    if (wrapped) t = wrapped[1].trim();
+    t = t.replace(/^【\s*/, '').replace(/\s*】$/, '').trim();
+    if (!t || !/[一-龥A-Za-z0-9]/.test(t)) return '';
+    return t.slice(0, 40);
+  }
+  /** 「括号里的这串像不像地点」：城市名 / 城市-区 / 行政区后缀；排除【急聘】【校招】这类角标 */
+  function looksLikePlaceToken(text) {
+    const s = String(text || '').trim();
+    if (!s || s.length > 20) return false;
+    return CITY_KEYWORDS.test(s) || looksLikeLocation(s) || /[市区县镇旗盟]$/.test(s);
+  }
+  /** 选择器 / 括号命中值 → 可信地点串（不合格返回 ''；远程/全国 等非具体地名放行） */
+  function normalizeLocationCandidate(raw) {
+    const n = normalizeLocationText(raw);
+    if (!n) return '';
+    if (looksLikePlaceToken(n) || /远程|居家|全国|不限|多地|海外/.test(n)) return n;
+    return '';
+  }
+  /** 岗位名清理：去掉猎聘标题里的「【城市】」后缀（只认地点形态的括号内容） */
+  function cleanJobTitle(raw) {
+    const t0 = String(raw == null ? '' : raw).replace(/\s+/g, ' ').trim();
+    if (!t0) return '';
+    const out = t0
+      .replace(/【\s*([^】]{1,20})\s*】/g, (m, inner) => (looksLikePlaceToken(inner) ? ' ' : m))
+      .replace(/\s*【\s*$/, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return out || t0;
   }
   // 清洗公司名：剔除地名型/保留字型脏值；有效时返回 trim 后的串（最长 80），否则返回 ''
   function cleanCompanyName(raw) {
@@ -606,11 +644,13 @@
     return '';
   }
 
-  function pickFromCard(card, selectorCandidates) {
+  function pickFromCard(card, selectorCandidates, normalize) {
     for (const sel of selectorCandidates) {
       const el = card.querySelector(sel);
       const t = textOf(el);
-      if (t) return t;
+      if (!t) continue;
+      const value = normalize ? normalize(t) : t;
+      if (value) return value;
     }
     return '';
   }
@@ -623,10 +663,12 @@
     const href = anchor?.href || card.getAttribute?.('data-bossclaw-jobdetail') || '';
     // 行兜底必须取**原始行**（见 rawLines 注释）
     const cardLines = rawLines(card);
-    const title = pickFromCard(card, FIELD_SELECTORS.title)
+    const title = cleanJobTitle(
+      pickFromCard(card, FIELD_SELECTORS.title)
       || textOf(anchor)
       || cardLines[0]
-      || '';
+      || '',
+    );
     let company = pickFromCard(card, FIELD_SELECTORS.company);
     if (!company) {
       for (const line of cardLines.slice(1)) {
@@ -669,8 +711,13 @@
       || matchSalaryText(decodeSalaryDigits(cardText))
       || '';
     // 地点：选择器 → 平台特有形态（猎聘卡片把城市写成「【北京】」）→ 城市名正则
-    const location = pickFromCard(card, FIELD_SELECTORS.location)
-      || (PLATFORM === 'liepin' ? cardText.match(/【\s*([^】]{2,20})\s*】/)?.[1] : '')
+    // 选择器命中值只做去括号/去空白（「【」这类脏值作废后继续试，不丢未收录城市）；
+    // 括号兜底才要求地点形态，避免把「【急聘】」当城市。
+    const bracketLocation = PLATFORM === 'liepin'
+      ? normalizeLocationCandidate(cardText.match(/【\s*([^】]{2,20})\s*】/)?.[1] || '')
+      : '';
+    const location = pickFromCard(card, FIELD_SELECTORS.location, normalizeLocationText)
+      || bracketLocation
       || cardText.match(/北京|上海|广州|深圳|杭州|成都|西安|武汉|南京|苏州|天津|重庆|长沙|郑州|厦门|青岛|全国/)?.[0]
       || '';
     const hrActive = cardText.match(/在线|刚刚活跃|今日活跃|昨日活跃|\d+\s*日内活跃|\d+\s*周内活跃|\d+\s*月内活跃|\d+\s*(?:分钟|小时)前活跃/)?.[0] || '';

@@ -73,6 +73,9 @@ const SUITES = [
   'liepin-im-regression.mjs',
   'liepin-apply-regression.mjs',
   'liepin-jd-regression.mjs',
+  // 2026-11-25：登录态首页推荐卡把城市并进标题且括号拆成独立 span → 地点被写成「【」，
+  // 下游「不在目标城市」硬约束误拦整批岗位。守住脏值作废 + 标题清理口径（两处搬运实现一致）
+  'liepin-card-fields-regression.mjs',
   'liepin-url-regression.mjs',
   'zhaopin-jd-regression.mjs',
   'zhaopin-url-regression.mjs',

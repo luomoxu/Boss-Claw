@@ -2146,11 +2146,70 @@ function companyFromTitle() {
   return '';
 }
 
-function pickFromCard(card, selectorCandidates) {
+/**
+ * 地点文本归一化：剥掉包裹方括号与多余空白（猎聘旧模板把地点写成「【成都-青羊区】」，
+ * 首页/推荐卡还有「【 成都 】」这类带空格的变体）。
+ * 归一后若不含任何实义字符（只剩「【」/「】」/标点）**返回空串**——让调用方继续尝试
+ * 下一个候选，而不是把「【」当成岗位地点写库（会被目标城市硬约束误拦）。
+ */
+function normalizeLocationText(raw) {
+  let t = String(raw == null ? '' : raw).replace(/\s+/g, ' ').trim();
+  const wrapped = t.match(/^【\s*([^】]{1,30})\s*】$/);
+  if (wrapped) t = wrapped[1].trim();
+  t = t.replace(/^【\s*/, '').replace(/\s*】$/, '').trim();
+  if (!t || !/[一-龥A-Za-z0-9]/.test(t)) return '';
+  return t.slice(0, 40);
+}
+
+/**
+ * 「括号里的这串像不像地点」：城市名 / 「城市-区」（looksLikeLocation）/ 以行政区后缀结尾。
+ * 用于猎聘「【城市】」形态的取值与标题清洗 —— 标题角标（【急聘】【校招】【双休】）一律不放行。
+ */
+function looksLikePlaceToken(text) {
+  const s = String(text || '').trim();
+  if (!s || s.length > 20) return false;
+  return CITY_KEYWORDS.test(s) || looksLikeLocation(s) || /[市区县镇旗盟]$/.test(s);
+}
+
+/**
+ * 选择器 / 括号命中的原始文本 → 可信的地点串（不合格返回 ''）。
+ * 「远程/全国/不限」这类非具体地名放行：下游 isLocationDecidable 会把它们按中性处理。
+ */
+function normalizeLocationCandidate(raw) {
+  const n = normalizeLocationText(raw);
+  if (!n) return '';
+  if (looksLikePlaceToken(n) || /远程|居家|全国|不限|多地|海外/.test(n)) return n;
+  return '';
+}
+
+/**
+ * 岗位名清理：猎聘旧模板把城市并在标题里（「首席工程负责人 【 成都 】」），
+ * 只去掉括号内是**地点**的片段（「【急聘】/【校招】」这类标题角标保持原样），
+ * 避免城市后缀跟着标题进 AI 筛选、去重与展示。
+ */
+function cleanJobTitle(raw) {
+  const t0 = String(raw == null ? '' : raw).replace(/\s+/g, ' ').trim();
+  if (!t0) return '';
+  const out = t0
+    .replace(/【\s*([^】]{1,20})\s*】/g, (m, inner) => (looksLikePlaceToken(inner) ? ' ' : m))
+    // innerText 被容器裁断时可能只剩开括号
+    .replace(/\s*【\s*$/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return out || t0;
+}
+
+/**
+ * 依次尝试选择器，取首个**有实义文本**的命中。
+ * `normalize` 可选：返回值经它清洗，清洗后为空则继续试下一个候选。
+ */
+function pickFromCard(card, selectorCandidates, normalize) {
   for (const sel of selectorCandidates) {
     const el = card.querySelector(sel);
     const t = textOf(el);
-    if (t) return t;
+    if (!t) continue;
+    const value = normalize ? normalize(t) : t;
+    if (value) return value;
   }
   return '';
 }
@@ -2178,10 +2237,13 @@ function cardIdentity(card) {
   const href = anchor?.href || card.getAttribute?.('data-bossclaw-jobdetail') || '';
   // 行兜底必须取**原始行**（见 rawLines 注释）：压平后的 textOf 只会给出「整卡一行」
   const cardLines = rawLines(card);
-  const title = pickFromCard(card, FIELD_SELECTORS.title)
+  // 猎聘旧模板的标题容器带「【城市】」后缀，统一在此剥离（其余平台无城市括号时原样保留）
+  const title = cleanJobTitle(
+    pickFromCard(card, FIELD_SELECTORS.title)
     || textOf(anchor)
     || cardLines[0]
-    || '';
+    || '',
+  );
   let company = pickFromCard(card, FIELD_SELECTORS.company);
   if (!company) {
     for (const line of cardLines.slice(1)) {
@@ -2241,8 +2303,14 @@ function cardFields(card) {
     || matchSalaryText(decodeSalaryDigits(cardText))
     || '';
   // 地点：选择器 → 平台特有形态（猎聘卡片把城市写成「【北京】」）→ 城市名正则
-  const location = pickFromCard(card, FIELD_SELECTORS.location)
-    || (PLATFORM === 'liepin' ? cardText.match(/【\s*([^】]{2,20})\s*】/)?.[1] : '')
+  // 选择器命中值先**只做去括号/去空白**：把「【」这类只剩括号的脏值作废，继续试下一个候选。
+  // 这里不要求命中值必须像已知城市 —— 否则「扬州」这类未收录城市会被整体丢弃，反而
+  // 让目标城市硬约束对这些岗位失效。括号兜底才要求「地点形态」，避免把「【急聘】」当城市。
+  const bracketLocation = PLATFORM === 'liepin'
+    ? normalizeLocationCandidate(cardText.match(/【\s*([^】]{2,20})\s*】/)?.[1] || '')
+    : '';
+  const location = pickFromCard(card, FIELD_SELECTORS.location, normalizeLocationText)
+    || bracketLocation
     || cardText.match(/北京|上海|广州|深圳|杭州|成都|西安|武汉|南京|苏州|天津|重庆|长沙|郑州|厦门|青岛|全国/)?.[0]
     || '';
   const hrActive = cardText.match(/在线|刚刚活跃|今日活跃|昨日活跃|\d+\s*日内活跃|\d+\s*周内活跃|\d+\s*月内活跃|\d+\s*(?:分钟|小时)前活跃/)?.[0] || '';
